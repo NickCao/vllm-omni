@@ -63,7 +63,7 @@ class VLLMOmniGenerateImage(_VLLMOmniGenerateBase):
         return {
             "required": {
                 "url": ("STRING", {"default": "http://dummy/v1"}),
-                "model": ([cls.models().keys()], {}),
+                "model": (list(cls.models().keys()), {}),
                 "prompt": ("STRING", {"multiline": True}),
                 "negative_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "width": ("INT", {"default": 512, "min": 64, "max": 2048}),
