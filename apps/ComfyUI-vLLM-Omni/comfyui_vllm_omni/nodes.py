@@ -42,9 +42,10 @@ class VLLMOmniGenerateImage(_VLLMOmniGenerateBase):
             config.load_incluster_config()
 
             api = client.CustomObjectsApi()
-            ret = api.list_cluster_custom_object(
+            ret = api.list_namespaced_custom_object(
                 "serving.knative.dev",
                 "v1",
+                "default",
                 "services",
                 label_selector="example.com/vllm-omni=true",
             )
