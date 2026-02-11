@@ -35,11 +35,35 @@ class _VLLMOmniGenerateBase:
 
 class VLLMOmniGenerateImage(_VLLMOmniGenerateBase):
     @classmethod
+    def models(cls):
+        try:
+            from kubernetes import client, config
+
+            config.load_incluster_config()
+
+            api = client.CustomObjectsApi()
+            ret = api.list_cluster_custom_object(
+                "serving.knative.dev",
+                "v1",
+                "services",
+                label_selector="example.com/vllm-omni=true",
+            )
+            models = {}
+            for i in ret["items"]:
+                models[i["spec"]["template"]["spec"]["containers"][0]["env"][0]["value"]] = (
+                    i["status"]["address"]["url"] + "/v1"
+                )
+            return models
+        except Exception:
+            return {}
+
+    @classmethod
     def INPUT_TYPES(cls):
+
         return {
             "required": {
-                "url": ("STRING", {"default": "http://localhost:8000/v1"}),
-                "model": ("STRING", {"default": "Tongyi-MAI/Z-Image-Turbo"}),
+                "url": ("STRING", {"default": "http://dummy/v1"}),
+                "model": ([cls.models().keys()], {}),
                 "prompt": ("STRING", {"multiline": True}),
                 "negative_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "width": ("INT", {"default": 512, "min": 64, "max": 2048}),
@@ -79,7 +103,7 @@ class VLLMOmniGenerateImage(_VLLMOmniGenerateBase):
         if image is None and mask is not None:
             raise ValueError("Mask input provided without an image input.")
 
-        client = VLLMOmniClient(url)
+        client = VLLMOmniClient(self.models()[model])
 
         spec, pattern = lookup_model_spec(model)
         is_bagel = pattern is not None and "bagel" in pattern.lower()
