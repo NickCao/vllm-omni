@@ -146,6 +146,13 @@ class KolorsPipeline(nn.Module, CFGParallelMixin):
             subfolder="scheduler",
             local_files_only=local_files_only,
         )
+        # EulerDiscreteScheduler.set_timesteps() uses np.array() on its
+        # internal tensors, which requires CPU. If the default device is
+        # CUDA during init, these tensors end up on GPU and numpy
+        # conversion fails. Move them to CPU proactively.
+        for key, val in vars(self.scheduler).items():
+            if isinstance(val, torch.Tensor) and val.device.type != "cpu":
+                setattr(self.scheduler, key, val.cpu())
 
         # Load text encoder and tokenizer (ChatGLM3)
         from diffusers.pipelines.kolors.text_encoder import ChatGLMModel
