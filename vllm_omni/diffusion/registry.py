@@ -110,6 +110,11 @@ _DIFFUSION_MODELS = {
         "pipeline_omnigen2",
         "OmniGen2Pipeline",
     ),
+    "KolorsPipeline": (
+        "kolors",
+        "pipeline_kolors",
+        "KolorsPipeline",
+    ),
 }
 
 
@@ -132,6 +137,7 @@ _VAE_PATCH_PARALLEL_ALLOWLIST = {
 _NO_CACHE_ACCELERATION = {
     # Pipelines that do not support cache acceleration (cache_dit / tea_cache).
     "NextStep11Pipeline",
+    "KolorsPipeline",
 }
 
 
@@ -295,6 +301,7 @@ _DIFFUSION_POST_PROCESS_FUNCS = {
     "NextStep11Pipeline": "get_nextstep11_post_process_func",
     "FluxPipeline": "get_flux_post_process_func",
     "OmniGen2Pipeline": "get_omnigen2_post_process_func",
+    "KolorsPipeline": "get_kolors_image_post_process_func",
 }
 
 _DIFFUSION_PRE_PROCESS_FUNCS = {
