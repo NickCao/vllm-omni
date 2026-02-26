@@ -90,7 +90,11 @@ class AsyncOmniDiffusion:
                 od_config.update_multimodal_support()
 
                 tf_config_dict = get_hf_file_to_dict("transformer/config.json", od_config.model)
-                od_config.tf_model_config = TransformerConfig.from_dict(tf_config_dict)
+                # UNet-based models (e.g. Kolors) have no transformer/ subfolder
+                if tf_config_dict is not None:
+                    od_config.tf_model_config = TransformerConfig.from_dict(tf_config_dict)
+                else:
+                    od_config.tf_model_config = TransformerConfig()
             else:
                 raise FileNotFoundError("model_index.json not found")
         except (AttributeError, OSError, ValueError, FileNotFoundError):
