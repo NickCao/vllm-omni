@@ -156,7 +156,10 @@ class KolorsPipeline(nn.Module, CFGParallelMixin):
             subfolder="tokenizer",
             local_files_only=local_files_only,
         )
-        self.text_encoder = ChatGLMModel.from_pretrained(
+        # Some repos (e.g. Kwai-Kolors/Kolors-diffusers) only ship fp16
+        # variant files. Try default first, fall back to variant="fp16".
+        self.text_encoder = self._from_pretrained_with_variant_fallback(
+            ChatGLMModel,
             model,
             subfolder="text_encoder",
             local_files_only=local_files_only,
@@ -170,7 +173,8 @@ class KolorsPipeline(nn.Module, CFGParallelMixin):
         self.unet = UNet2DConditionModel.from_config(unet_config)
 
         # Load VAE
-        self.vae = AutoencoderKL.from_pretrained(
+        self.vae = self._from_pretrained_with_variant_fallback(
+            AutoencoderKL,
             model,
             subfolder="vae",
             local_files_only=local_files_only,
@@ -193,6 +197,19 @@ class KolorsPipeline(nn.Module, CFGParallelMixin):
         )
         self.force_zeros_for_empty_prompt = False
         self.output_type = od_config.output_type
+
+    @staticmethod
+    def _from_pretrained_with_variant_fallback(cls, model, **kwargs):
+        """Load a pretrained model, falling back to variant='fp16' on failure.
+
+        Some model repos (e.g. Kwai-Kolors/Kolors-diffusers) only ship
+        fp16 variant weight files. This helper tries the default variant
+        first, then retries with variant='fp16'.
+        """
+        try:
+            return cls.from_pretrained(model, **kwargs)
+        except (OSError, ValueError):
+            return cls.from_pretrained(model, variant="fp16", **kwargs)
 
     def encode_prompt(
         self,
