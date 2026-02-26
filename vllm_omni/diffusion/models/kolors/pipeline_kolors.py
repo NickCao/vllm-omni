@@ -12,23 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import inspect
-from typing import Any, Callable
+import os
+from collections.abc import Callable
+from typing import Any
 
 import torch
-from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+import torch.nn as nn
+from diffusers import AutoencoderKL, UNet2DConditionModel
+from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
+from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
+from diffusers.models import ImageProjection
+from diffusers.schedulers import EulerDiscreteScheduler
+from diffusers.utils import deprecate, is_torch_xla_available
+from diffusers.utils.torch_utils import randn_tensor
+from transformers import ChatGLMModel, ChatGLMTokenizer
+from vllm.logger import init_logger
 
-from ...callbacks import MultiPipelineCallbacks, PipelineCallback
-from ...image_processor import PipelineImageInput, VaeImageProcessor
-from ...loaders import IPAdapterMixin, StableDiffusionLoraLoaderMixin
-from ...models import AutoencoderKL, ImageProjection, UNet2DConditionModel
-from ...schedulers import KarrasDiffusionSchedulers
-from ...utils import deprecate, is_torch_xla_available, logging, replace_example_docstring
-from ...utils.torch_utils import randn_tensor
-from ..pipeline_utils import DiffusionPipeline, StableDiffusionMixin
-from .pipeline_output import KolorsPipelineOutput
-from .text_encoder import ChatGLMModel
-from .tokenizer import ChatGLMTokenizer
-
+from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
+from vllm_omni.diffusion.distributed.utils import get_local_device
+from vllm_omni.diffusion.request import OmniDiffusionRequest
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -38,26 +40,7 @@ else:
     XLA_AVAILABLE = False
 
 
-logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
-
-
-EXAMPLE_DOC_STRING = """
-    Examples:
-        ```py
-        >>> import torch
-        >>> from diffusers import KolorsPipeline
-
-        >>> pipe = KolorsPipeline.from_pretrained(
-        ...     "Kwai-Kolors/Kolors-diffusers", variant="fp16", torch_dtype=torch.float16
-        ... )
-        >>> pipe = pipe.to("cuda")
-
-        >>> prompt = (
-        ...     "A photo of a ladybug, macro, zoom, high quality, film, holding a wooden sign with the text 'KOLORS'"
-        ... )
-        >>> image = pipe(prompt).images[0]
-        ```
-"""
+logger = init_logger(__name__)
 
 
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
@@ -120,7 +103,7 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
-class KolorsPipeline(DiffusionPipeline, StableDiffusionMixin, StableDiffusionLoraLoaderMixin, IPAdapterMixin):
+class KolorsPipeline(nn.Module):
     r"""
     Pipeline for text-to-image generation using Kolors.
 
@@ -166,35 +149,51 @@ class KolorsPipeline(DiffusionPipeline, StableDiffusionMixin, StableDiffusionLor
 
     def __init__(
         self,
-        vae: AutoencoderKL,
-        text_encoder: ChatGLMModel,
-        tokenizer: ChatGLMTokenizer,
-        unet: UNet2DConditionModel,
-        scheduler: KarrasDiffusionSchedulers,
-        image_encoder: CLIPVisionModelWithProjection = None,
-        feature_extractor: CLIPImageProcessor = None,
-        force_zeros_for_empty_prompt: bool = False,
+        *,
+        od_config: OmniDiffusionConfig,
+        prefix: str = "",
     ):
         super().__init__()
+        self.od_config = od_config
+        self.parallel_config = od_config.parallel_config
+        self.device = get_local_device()
+        model = od_config.model
+        local_files_only = os.path.exists(model)
 
-        self.register_modules(
-            vae=vae,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
-            unet=unet,
-            scheduler=scheduler,
-            image_encoder=image_encoder,
-            feature_extractor=feature_extractor,
+        self.scheduler = EulerDiscreteScheduler.from_pretrained(
+            model,
+            subfolder="scheduler",
+            local_files_only=local_files_only,
         )
-        self.register_to_config(force_zeros_for_empty_prompt=force_zeros_for_empty_prompt)
-        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
+
+        self.text_encoder = ChatGLMModel.from_pretrained(
+            model,
+            subfolder="text_encoder",
+            local_files_only=local_files_only,
+        ).to(self.device)
+
+        self.tokenizer = ChatGLMTokenizer.from_pretrained(
+            model,
+            subfolder="tokenizer",
+            local_files_only=local_files_only,
+        )
+
+        self.vae = AutoencoderKL.from_pretrained(
+            model,
+            subfolder="vae",
+            local_files_only=local_files_only,
+        ).to(self.device)
+
+        self.unet = UNet2DConditionModel.from_pretrained(
+            model,
+            subfolder="unet",
+            local_files_only=local_files_only,
+        ).to(self.device)
+
+        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        self.default_sample_size = self.unet.config.sample_size
+
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
-
-        self.default_sample_size = (
-            self.unet.config.sample_size
-            if hasattr(self, "unet") and self.unet is not None and hasattr(self.unet.config, "sample_size")
-            else 128
-        )
 
     def encode_prompt(
         self,
@@ -644,10 +643,9 @@ class KolorsPipeline(DiffusionPipeline, StableDiffusionMixin, StableDiffusionLor
     def interrupt(self):
         return self._interrupt
 
-    @torch.no_grad()
-    @replace_example_docstring(EXAMPLE_DOC_STRING)
-    def __call__(
+    def forward(
         self,
+        req: OmniDiffusionRequest,
         prompt: str | list[str] = None,
         height: int | None = None,
         width: int | None = None,
@@ -679,11 +677,13 @@ class KolorsPipeline(DiffusionPipeline, StableDiffusionMixin, StableDiffusionLor
         callback_on_step_end: Callable[[int, int], None] | PipelineCallback | MultiPipelineCallbacks | None = None,
         callback_on_step_end_tensor_inputs: list[str] = ["latents"],
         max_sequence_length: int = 256,
-    ):
+    ) -> DiffusionOutput:
         r"""
         Function invoked when calling the pipeline for generation.
 
         Args:
+            req (`OmniDiffusionRequest`):
+                The request
             prompt (`str` or `list[str]`, *optional*):
                 The prompt or prompts to guide the image generation. If not defined, one has to pass `prompt_embeds`.
                 instead.
@@ -806,21 +806,32 @@ class KolorsPipeline(DiffusionPipeline, StableDiffusionMixin, StableDiffusionLor
                 `._callback_tensor_inputs` attribute of your pipeline class.
             max_sequence_length (`int` defaults to 256): Maximum sequence length to use with the `prompt`.
 
-        Examples:
-
         Returns:
-            [`~pipelines.kolors.KolorsPipelineOutput`] or `tuple`: [`~pipelines.kolors.KolorsPipelineOutput`] if
-            `return_dict` is True, otherwise a `tuple`. When returning a tuple, the first element is a list with the
-            generated images.
+            [`DiffusionOutput`]
         """
+        # TODO: In online mode, sometimes it receives [{"negative_prompt": None}, {...}], so cannot use .get("...", "")
+        # TODO: May be some data formatting operations on the API side. Hack for now.
+        prompt = [p if isinstance(p, str) else (p.get("prompt") or "") for p in req.prompts] or prompt
+        if all(isinstance(p, str) or p.get("negative_prompt") is None for p in req.prompts):
+            negative_prompt = None
+        elif req.prompts:
+            negative_prompt = ["" if isinstance(p, str) else (p.get("negative_prompt") or "") for p in req.prompts]
 
-        if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
-            callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
+        height = req.sampling_params.height or self.default_sample_size * self.vae_scale_factor
+        width = req.sampling_params.width or self.default_sample_size * self.vae_scale_factor
+        num_inference_steps = req.sampling_params.num_inference_steps or num_inference_steps
+        sigmas = req.sampling_params.sigmas or sigmas
+        max_sequence_length = req.sampling_params.max_sequence_length or max_sequence_length
+        generator = req.sampling_params.generator or generator
+        if req.sampling_params.guidance_scale_provided:
+            guidance_scale = req.sampling_params.guidance_scale
+        num_images_per_prompt = (
+            req.sampling_params.num_outputs_per_prompt
+            if req.sampling_params.num_outputs_per_prompt > 0
+            else num_images_per_prompt
+        )
 
         # 0. Default height and width to unet
-        height = height or self.default_sample_size * self.vae_scale_factor
-        width = width or self.default_sample_size * self.vae_scale_factor
-
         original_size = original_size or (height, width)
         target_size = target_size or (height, width)
 
@@ -1054,10 +1065,4 @@ class KolorsPipeline(DiffusionPipeline, StableDiffusionMixin, StableDiffusionLor
         if not output_type == "latent":
             image = self.image_processor.postprocess(image, output_type=output_type)
 
-        # Offload all models
-        self.maybe_free_model_hooks()
-
-        if not return_dict:
-            return (image,)
-
-        return KolorsPipelineOutput(images=image)
+        return DiffusionOutput(output=image)
