@@ -23,7 +23,7 @@ from vllm_omni.engine.input_processor import OmniInputProcessor
 from vllm_omni.entrypoints.client_request_state import ClientRequestState
 from vllm_omni.entrypoints.omni import OmniBase
 from vllm_omni.entrypoints.omni_stage import OmniStage
-from vllm_omni.entrypoints.stage_utils import SHUTDOWN_TASK, OmniStageTaskType
+from vllm_omni.entrypoints.stage_utils import SHUTDOWN_TASK, OmniStageTaskAbort, OmniStageTaskType
 from vllm_omni.entrypoints.stage_utils import maybe_load_from_ipc as _load
 from vllm_omni.entrypoints.utils import (
     get_final_stage_id_for_e2e,
@@ -824,7 +824,10 @@ class AsyncOmni(OmniBase):
             if self._inline_engine is not None:
                 self._inline_engine.engine.abort(request_id)
             return None
-        abort_task = {"type": OmniStageTaskType.ABORT, "request_id": request_id}
+        abort_task = OmniStageTaskAbort(
+            type=OmniStageTaskType.ABORT,
+            request_id=request_id,
+        )
         for stage in self.stage_list:
             stage.submit(abort_task)
         return None

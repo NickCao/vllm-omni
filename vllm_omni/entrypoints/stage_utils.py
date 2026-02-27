@@ -5,7 +5,7 @@ import importlib
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from multiprocessing import shared_memory as _shm
 from typing import Any, Literal, TypedDict
 
@@ -37,6 +37,11 @@ class OmniStageTaskType(enum.Enum):
     PROFILER_START = "profiler_start"
     PROFILER_STOP = "profiler_stop"
     COLLECTIVE_RPC = "collective_rpc"
+
+
+class OmniStageTaskAbort(TypedDict):
+    type: Literal[OmniStageTaskType.ABORT]
+    request_id: str | Iterable[str]
 
 
 class OmniStageTaskShutdown(TypedDict):
