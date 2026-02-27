@@ -7,7 +7,7 @@ import logging
 import os
 from collections.abc import Callable
 from multiprocessing import shared_memory as _shm
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from omegaconf import OmegaConf
 
@@ -39,7 +39,11 @@ class OmniStageTaskType(enum.Enum):
     COLLECTIVE_RPC = "collective_rpc"
 
 
-SHUTDOWN_TASK = {"type": OmniStageTaskType.SHUTDOWN}
+class OmniStageTaskShutdown(TypedDict):
+    type: Literal[OmniStageTaskType.SHUTDOWN]
+
+
+SHUTDOWN_TASK = OmniStageTaskShutdown(type=OmniStageTaskType.SHUTDOWN)
 
 
 def is_profiler_task(task_type: OmniStageTaskType) -> bool:
