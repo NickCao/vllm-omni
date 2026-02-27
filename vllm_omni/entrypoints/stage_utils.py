@@ -43,6 +43,14 @@ class OmniStageTaskShutdown(TypedDict):
     type: Literal[OmniStageTaskType.SHUTDOWN]
 
 
+class OmniStageTaskProfilerStart(TypedDict):
+    type: Literal[OmniStageTaskType.PROFILER_START]
+
+
+class OmniStageTaskProfilerStop(TypedDict):
+    type: Literal[OmniStageTaskType.PROFILER_STOP]
+
+
 SHUTDOWN_TASK = OmniStageTaskShutdown(type=OmniStageTaskType.SHUTDOWN)
 
 

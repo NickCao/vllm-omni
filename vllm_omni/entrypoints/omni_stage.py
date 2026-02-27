@@ -44,6 +44,7 @@ from vllm_omni.entrypoints.omni_diffusion import OmniDiffusion
 from vllm_omni.entrypoints.omni_llm import OmniLLM
 from vllm_omni.entrypoints.stage_utils import (
     SHUTDOWN_TASK,
+    OmniStageTaskProfilerStop,
     OmniStageTaskType,
     _resolve_model_tokenizer_paths,
     _to_dict,
@@ -388,7 +389,7 @@ class OmniStage:
             return {}
 
         logger.info(f"[Stage-{self.stage_id}] Sending PROFILER_STOP to worker...")
-        self.submit({"type": OmniStageTaskType.PROFILER_STOP})
+        self.submit(OmniStageTaskProfilerStop(type=OmniStageTaskType.PROFILER_STOP))
 
         # Wait for result from worker
         try:

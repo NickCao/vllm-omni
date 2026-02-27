@@ -37,7 +37,12 @@ from vllm_omni.distributed.ray_utils.utils import (
 )
 from vllm_omni.entrypoints.cfg_companion_tracker import CfgCompanionTracker
 from vllm_omni.entrypoints.omni_stage import OmniStage
-from vllm_omni.entrypoints.stage_utils import SHUTDOWN_TASK, OmniStageTaskType
+from vllm_omni.entrypoints.stage_utils import (
+    SHUTDOWN_TASK,
+    OmniStageTaskProfilerStart,
+    OmniStageTaskProfilerStop,
+    OmniStageTaskType,
+)
 from vllm_omni.entrypoints.stage_utils import maybe_load_from_ipc as _load
 from vllm_omni.entrypoints.utils import (
     filter_dataclass_kwargs,
@@ -746,7 +751,7 @@ class OmniBase:
                     )
                     continue
                 try:
-                    self.stage_list[stage_id].submit({"type": OmniStageTaskType.PROFILER_START})
+                    self.stage_list[stage_id].submit(OmniStageTaskProfilerStart(type=OmniStageTaskType.PROFILER_START))
                     logger.info("[%s] Sent start_profile to stage-%s", self._name, stage_id)
                 except Exception as e:
                     logger.warning(
@@ -820,7 +825,7 @@ class OmniBase:
                         self._name,
                         stage_id,
                     )
-                    stage.submit({"type": OmniStageTaskType.PROFILER_STOP})
+                    stage.submit(OmniStageTaskProfilerStop(type=OmniStageTaskType.PROFILER_STOP))
 
         # Final debug output
         logger.info(
