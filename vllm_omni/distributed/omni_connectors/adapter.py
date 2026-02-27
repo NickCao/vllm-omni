@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from vllm_omni.entrypoints.stage_utils import OmniStageTaskType
+from vllm_omni.entrypoints.stage_utils import OmniStageTaskGenerate, OmniStageTaskType
 from vllm_omni.metrics import OrchestratorAggregator
 
 from .utils.logging import get_connector_logger
@@ -65,15 +65,15 @@ def try_send_via_connector(
 
         if success:
             # Send lightweight notification via queue
-            notify_payload = {
-                "type": OmniStageTaskType.GENERATE,
-                "request_id": req_id,
-                "sampling_params": sampling_params,
-                "from_connector": True,
-                "from_stage": str(stage_id),
-                "to_stage": str(next_stage_id),
-                "sent_ts": time.time(),
-            }
+            notify_payload = OmniStageTaskGenerate(
+                type=OmniStageTaskType.GENERATE,
+                request_id=req_id,
+                sampling_params=sampling_params,
+                from_connector=True,
+                from_stage=str(stage_id),
+                to_stage=str(next_stage_id),
+                sent_ts=time.time(),
+            )
             # Merge connector metadata (e.g. shm handle or inline data) into queue payload
             if metadata:
                 notify_payload["connector_metadata"] = metadata

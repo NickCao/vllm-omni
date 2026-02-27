@@ -9,6 +9,12 @@ from collections.abc import Callable, Iterable
 from multiprocessing import shared_memory as _shm
 from typing import Any, Literal, TypedDict
 
+try:
+    from typing import NotRequired
+except ImportError:
+    # Python < 3.11: use typing_extensions
+    from typing_extensions import NotRequired
+
 from omegaconf import OmegaConf
 
 logger = logging.getLogger(__name__)
@@ -37,6 +43,17 @@ class OmniStageTaskType(enum.Enum):
     PROFILER_START = "profiler_start"
     PROFILER_STOP = "profiler_stop"
     COLLECTIVE_RPC = "collective_rpc"
+
+
+class OmniStageTaskGenerate(TypedDict):
+    type: NotRequired[Literal[OmniStageTaskType.GENERATE]]
+    request_id: str
+    sampling_params: Any
+    from_connector: bool
+    from_stage: str
+    to_stage: str
+    sent_ts: float
+    connector_metadata: NotRequired[Any]
 
 
 class OmniStageTaskAbort(TypedDict):
