@@ -23,7 +23,12 @@ from vllm_omni.engine.input_processor import OmniInputProcessor
 from vllm_omni.entrypoints.client_request_state import ClientRequestState
 from vllm_omni.entrypoints.omni import OmniBase
 from vllm_omni.entrypoints.omni_stage import OmniStage
-from vllm_omni.entrypoints.stage_utils import SHUTDOWN_TASK, OmniStageTaskAbort, OmniStageTaskType
+from vllm_omni.entrypoints.stage_utils import (
+    SHUTDOWN_TASK,
+    OmniStageTaskAbort,
+    OmniStageTaskGenerate,
+    OmniStageTaskType,
+)
 from vllm_omni.entrypoints.stage_utils import maybe_load_from_ipc as _load
 from vllm_omni.entrypoints.utils import (
     get_final_stage_id_for_e2e,
@@ -379,11 +384,11 @@ class AsyncOmni(OmniBase):
             req_state.metrics = metrics
             self.request_states[request_id] = req_state
             sp0: SamplingParams = sampling_params_list[0]  # type: ignore[index]
-            task = {
-                "request_id": request_id,
-                "engine_inputs": prompt,
-                "sampling_params": sp0,
-            }
+            task = OmniStageTaskGenerate(
+                request_id=request_id,
+                engine_inputs=prompt,
+                sampling_params=sp0,
+            )
             self.stage_list[0].submit(task)
             metrics.stage_first_ts[0] = metrics.stage_first_ts[0] or time.time()
             _req_start_ts[request_id] = time.time()
@@ -572,11 +577,11 @@ class AsyncOmni(OmniBase):
                     if engine_input.get("type") == "multimodal":
                         engine_input["type"] = "token"
                     for i in range(1, len(self.stage_list)):
-                        task = {
-                            "request_id": request_id,
-                            "engine_inputs": engine_input,
-                            "sampling_params": sampling_params_list[i],
-                        }
+                        task = OmniStageTaskGenerate(
+                            request_id=request_id,
+                            engine_inputs=engine_input,
+                            sampling_params=sampling_params_list[i],
+                        )
                         self.stage_list[i].submit(task)
                         metrics.stage_first_ts[i] = time.time()
                 all_stages_finished[stage_id] = finished

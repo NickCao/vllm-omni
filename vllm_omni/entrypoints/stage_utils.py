@@ -48,11 +48,16 @@ class OmniStageTaskType(enum.Enum):
 class OmniStageTaskGenerate(TypedDict):
     type: NotRequired[Literal[OmniStageTaskType.GENERATE]]
     request_id: str
-    sampling_params: Any
-    from_connector: bool
-    from_stage: str
-    to_stage: str
-    sent_ts: float
+    sampling_params: NotRequired[Any]
+
+    # seed task
+    engine_inputs: NotRequired[Any]
+
+    # connector notification
+    from_connector: NotRequired[bool]
+    from_stage: NotRequired[str]
+    to_stage: NotRequired[str]
+    sent_ts: NotRequired[float]
     connector_metadata: NotRequired[Any]
 
 

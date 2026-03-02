@@ -39,6 +39,7 @@ from vllm_omni.entrypoints.cfg_companion_tracker import CfgCompanionTracker
 from vllm_omni.entrypoints.omni_stage import OmniStage
 from vllm_omni.entrypoints.stage_utils import (
     SHUTDOWN_TASK,
+    OmniStageTaskGenerate,
     OmniStageTaskProfilerStart,
     OmniStageTaskProfilerStop,
     OmniStageTaskType,
@@ -1181,11 +1182,11 @@ class Omni(OmniBase):
 
         for req_id, prompt in request_id_to_prompt.items():
             sp0 = sampling_params_list[0]  # type: ignore[index]
-            task = {
-                "request_id": req_id,
-                "engine_inputs": prompt,
-                "sampling_params": sp0,
-            }
+            task = OmniStageTaskGenerate(
+                request_id=req_id,
+                engine_inputs=prompt,
+                sampling_params=sp0,
+            )
             self.stage_list[0].submit(task)
             _req_start_ts[req_id] = time.time()
             logger.debug(f"[{self._name}] Enqueued request {req_id} to stage-0")
