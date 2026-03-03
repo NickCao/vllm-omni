@@ -11,6 +11,9 @@ from msgspec import msgpack
 from PIL import Image
 from vllm.outputs import CompletionOutput, RequestOutput
 
+from vllm_omni.distributed.ray_utils.utils import ray_get_tensor, ray_put_tensor
+import ray
+
 # Type markers for custom serialization
 _TENSOR_MARKER = "__tensor__"
 _NDARRAY_MARKER = "__ndarray__"
@@ -37,8 +40,9 @@ class OmniMsgpackEncoder:
     TODO: Enable zero-copy support.
     """
 
-    def __init__(self):
+    def __init__(self, worker_backend: str = "multi_process"):
         self.encoder = msgpack.Encoder(enc_hook=self._enc_hook)
+        self.worker_backend = worker_backend
 
     def encode(self, obj: Any) -> bytes:
         """Encode an object to bytes."""
@@ -82,17 +86,24 @@ class OmniMsgpackEncoder:
 
     def _encode_tensor(self, tensor: torch.Tensor) -> dict[str, Any]:
         """Encode torch.Tensor to dict."""
-        t = tensor.detach().contiguous().cpu()
-        # Handle 0-dimensional (scalar) tensors by reshaping to 1D first
-        if t.dim() == 0:
-            t = t.reshape(1)
-        t = t.view(torch.uint8)
-        return {
-            _TENSOR_MARKER: True,
-            "dtype": str(tensor.dtype).removeprefix("torch."),
-            "shape": list(tensor.shape),
-            "data": t.numpy().tobytes(),
-        }
+        if self.worker_backend == "ray" and ray.get_runtime_context().get_actor_id() is not None:
+            ref = ray_put_tensor(tensor)
+            return {
+                _TENSOR_MARKER: True,
+                "ref": ref,
+            }
+        else:
+            t = tensor.detach().contiguous().cpu()
+            # Handle 0-dimensional (scalar) tensors by reshaping to 1D first
+            if t.dim() == 0:
+                t = t.reshape(1)
+            t = t.view(torch.uint8)
+            return {
+                _TENSOR_MARKER: True,
+                "dtype": str(tensor.dtype).removeprefix("torch."),
+                "shape": list(tensor.shape),
+                "data": t.numpy().tobytes(),
+            }
 
     def _encode_ndarray(self, arr: np.ndarray) -> dict[str, Any]:
         """Encode numpy.ndarray to dict."""
@@ -173,8 +184,9 @@ class OmniMsgpackDecoder:
     TODO: Enable zero-copy support.
     """
 
-    def __init__(self):
+    def __init__(self, worker_backend: str = "multi_process"):
         self.decoder = msgpack.Decoder()
+        self.worker_backend = worker_backend
 
     def decode(self, data: bytes | bytearray | memoryview) -> Any:
         """Decode bytes to object."""
@@ -262,17 +274,21 @@ class OmniMsgpackDecoder:
 
     def _decode_tensor(self, obj: dict[str, Any]) -> torch.Tensor:
         """Decode dict to torch.Tensor."""
-        dtype_str = obj["dtype"]
-        shape = obj["shape"]
-        data = obj["data"]
+        if (self.worker_backend == "ray") and (ray.get_runtime_context().get_actor_id() is not None) and ("dtype" not in obj):
+            ref = obj["ref"]
+            return ray_get_tensor(ref)
+        else:
+            dtype_str = obj["dtype"]
+            shape = obj["shape"]
+            data = obj["data"]
 
-        torch_dtype = getattr(torch, dtype_str)
-        if not data:
-            return torch.empty(shape, dtype=torch_dtype)
+            torch_dtype = getattr(torch, dtype_str)
+            if not data:
+                return torch.empty(shape, dtype=torch_dtype)
 
-        buffer = bytearray(data) if isinstance(data, (bytes, memoryview)) else data
-        arr = torch.frombuffer(buffer, dtype=torch.uint8)
-        return arr.view(torch_dtype).reshape(shape)
+            buffer = bytearray(data) if isinstance(data, (bytes, memoryview)) else data
+            arr = torch.frombuffer(buffer, dtype=torch.uint8)
+            return arr.view(torch_dtype).reshape(shape)
 
     def _decode_ndarray(self, obj: dict[str, Any]) -> np.ndarray:
         """Decode dict to numpy.ndarray."""
@@ -318,9 +334,9 @@ class OmniMsgpackDecoder:
 class OmniSerde:
     """Serialization/deserialization handler for Omni IPC."""
 
-    def __init__(self):
-        self.encoder = OmniMsgpackEncoder()
-        self.decoder = OmniMsgpackDecoder()
+    def __init__(self, worker_backend: str = "multi_process"):
+        self.encoder = OmniMsgpackEncoder(worker_backend=worker_backend)
+        self.decoder = OmniMsgpackDecoder(worker_backend=worker_backend)
 
     def serialize(self, obj: Any) -> bytes:
         """Serialize an object to bytes."""
@@ -332,4 +348,4 @@ class OmniSerde:
 
 
 # Global instance for simple interface
-OmniSerializer = OmniSerde()
+OmniSerializer = OmniSerde(worker_backend="ray")  # FIXME: per worker instances

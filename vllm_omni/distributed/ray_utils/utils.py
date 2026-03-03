@@ -12,6 +12,7 @@ try:
     import ray
     from ray.util.queue import Queue as RayQueue
     from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+    from ray import cloudpickle
 
     RAY_AVAILABLE = True
     from ray.util.placement_group import PlacementGroup
@@ -21,6 +22,8 @@ except ImportError:
     PlacementGroupSchedulingStrategy = None
     RAY_AVAILABLE = False
     PlacementGroup = Any
+    cloudpickle = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -179,3 +182,15 @@ def start_ray_actor(
     worker_actor.run.remote(worker_entry_fn, *args, **kwargs)
 
     return worker_actor
+
+def ray_put_tensor(tensor: torch.Tensor) -> bytes:
+    if not RAY_AVAILABLE:
+        raise ImportError("ray is required for ray put tensor")
+
+    return cloudpickle.dumps(ray.put(tensor, _tensor_transport="nixl"))
+
+def ray_get_tensor(ref: bytes) -> torch.Tensor:
+    if not RAY_AVAILABLE:
+        raise ImportError("ray is required for ray put tensor")
+
+    return ray.get(cloudpickle.loads(ref))
