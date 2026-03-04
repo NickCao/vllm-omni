@@ -121,13 +121,21 @@ class SharedMemoryConnector(OmniConnectorBase):
                 return self._get_data_with_lock(lock_file, shm_handle)
 
             return None
+
         shm = None
         try:
             shm = shm_pkg.SharedMemory(name=get_key)
             if shm is None or shm.size == 0:
                 return None
-            lock_file = f"/dev/shm/shm_{get_key}_lockfile.lock"
+        except Exception as e:
+            # Probable cause: producer and consumer not on the same node
+            # and metadata is not propagated to consumer
+            logger.error(f"SharedMemoryConnector shm get failed for req {get_key}: {e}")
+            return None
+
+        try:
             shm_handle = {"name": get_key, "size": shm.size}
+            lock_file = f"/dev/shm/shm_{shm_handle['name']}_lockfile.lock"
             return self._get_data_with_lock(lock_file, shm_handle)
         except Exception:
             return None
