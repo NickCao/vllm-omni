@@ -117,8 +117,12 @@ class RayConnector(OmniConnectorBase):
         if self._ref_store is not None:
             return
 
-        if not ray.is_initialized():
-            initialize_ray_cluster(address="auto")
+        # Always call initialize_ray_cluster() — when Ray is already
+        # initialized (e.g. in a Ray actor), it skips ray.init() but
+        # still propagates RAY_ADDRESS and RAY_NAMESPACE to the
+        # environment so that child subprocesses (e.g. vLLM's
+        # EngineCore) inherit them.
+        initialize_ray_cluster(address="auto")
 
         # get_if_exists=True atomically creates the actor if it does
         # not exist, or returns a handle to the existing one.
