@@ -170,6 +170,26 @@ def test_bagel_text2img_shared_memory_connector():
         omni.close()
 
 
+@pytest.mark.core_model
+@pytest.mark.diffusion
+@hardware_test(res={"cuda": "H100"}, num_cards={"cuda": 2})
+def test_bagel_text2img_ray_connector():
+    """Test Bagel text2img with Ray connector."""
+    config_path = str(Path(__file__).parent / "stage_configs" / "bagel_ray_ci.yaml")
+    omni = Omni(
+        model="ByteDance-Seed/BAGEL-7B-MoT",
+        stage_configs_path=config_path,
+        stage_init_timeout=300,
+        worker_backend="ray",
+    )
+
+    try:
+        generated_image = _generate_bagel_image(omni)
+        _validate_pixels(generated_image)
+    finally:
+        omni.close()
+
+
 def _wait_for_port(host: str, port: int, timeout: int = 30) -> bool:
     """Wait for a port to become available.
 

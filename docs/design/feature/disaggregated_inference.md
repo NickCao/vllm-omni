@@ -9,6 +9,7 @@ Backend-specific setup lives in separate docs:
 - [MooncakeStoreConnector](omni_connectors/mooncake_store_connector.md)
 - [MooncakeTransferEngineConnector](omni_connectors/mooncake_transfer_engine_connector.md)
 - [YuanrongConnector](omni_connectors/yuanrong_connector.md)
+- [RayConnector](omni_connectors/ray_connector.md)
 
 ## Overview
 
@@ -23,6 +24,7 @@ Current connectors operate in D2H2D (device to host to device) mode.
 | Multi node (Mooncake Store) | MooncakeStoreConnector | TCP-based, requires Mooncake Master + metadata server. |
 | Multi node (Mooncake RDMA) | MooncakeTransferEngineConnector | RDMA/TCP direct transfer with managed memory pool. Fastest. |
 | Multi node (Yuanrong) | YuanrongConnector | Requires Yuanrong Datasystem + etcd. |
+| Multi node (Ray) | RayConnector | No extra infra — uses existing Ray cluster. |
 
 ## Core API
 
