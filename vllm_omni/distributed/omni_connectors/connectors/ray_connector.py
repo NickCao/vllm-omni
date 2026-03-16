@@ -122,8 +122,12 @@ class RayConnector(OmniConnectorBase):
 
         # get_if_exists=True atomically creates the actor if it does
         # not exist, or returns a handle to the existing one.
+        # A fixed namespace is required because each process that
+        # calls ray.init() gets a random namespace by default, and
+        # named actors are scoped per namespace.
         self._ref_store = RayRefStore.options(  # type: ignore[attr-defined]
             name=self._actor_name,
+            namespace="vllm_omni",
             get_if_exists=True,
         ).remote()
         ns = ray.get_runtime_context().namespace
