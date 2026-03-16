@@ -104,14 +104,22 @@ def initialize_ray_cluster(address: str | None = None):
     if not ray.is_initialized():
         # Pass current PYTHONPATH to workers to ensure they can find vllm_omni
         runtime_env = {"env_vars": {"PYTHONPATH": os.environ.get("PYTHONPATH", "")}}
-        ray.init(address=address, ignore_reinit_error=True, runtime_env=runtime_env)
+        namespace = os.environ.get("RAY_NAMESPACE")
+        ray.init(
+            address=address,
+            namespace=namespace,
+            ignore_reinit_error=True,
+            runtime_env=runtime_env,
+        )
 
-    # Propagate the cluster address to child processes (e.g. vLLM's
-    # EngineCore subprocess) so that ray.init(address="auto") can
-    # discover the cluster without relying on session files.
-    if "RAY_ADDRESS" not in os.environ and ray.is_initialized():
+    # Propagate the cluster address and namespace to child processes
+    # (e.g. vLLM's EngineCore subprocess) so that ray.init() in
+    # those processes joins the same cluster and namespace.
+    if ray.is_initialized():
         try:
-            os.environ["RAY_ADDRESS"] = ray.get_runtime_context().gcs_address
+            ctx = ray.get_runtime_context()
+            os.environ.setdefault("RAY_ADDRESS", ctx.gcs_address)
+            os.environ.setdefault("RAY_NAMESPACE", ctx.namespace)
         except Exception:
             pass
 
