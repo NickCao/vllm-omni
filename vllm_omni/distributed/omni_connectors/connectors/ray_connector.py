@@ -118,7 +118,7 @@ class RayConnector(OmniConnectorBase):
             return
 
         if not ray.is_initialized():
-            initialize_ray_cluster()
+            initialize_ray_cluster(address="auto")
 
         # get_if_exists=True atomically creates the actor if it does
         # not exist, or returns a handle to the existing one.
