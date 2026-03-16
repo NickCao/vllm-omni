@@ -106,15 +106,17 @@ class RayConnector(OmniConnectorBase):
     def _ensure_ref_store(self) -> None:
         """Lazily obtain or create the ``RayRefStore`` actor.
 
-        Deferred from ``__init__`` because the orchestrator may create
-        the connector before ``initialize_ray_cluster`` has been called.
+        Deferred from ``__init__`` because the connector may be
+        created before Ray is initialized (orchestrator process) or
+        in a subprocess that is not a Ray actor (vLLM's EngineCore
+        spawned by ``multiproc_executor``).  In either case we
+        connect to the existing cluster via ``address="auto"``.
         """
         if self._ref_store is not None:
             return
 
-        assert ray.is_initialized(), (
-            "RayConnector requires Ray to be initialized before use"
-        )
+        if not ray.is_initialized():
+            ray.init(address="auto", ignore_reinit_error=True)
 
         # get_if_exists=True atomically creates the actor if it does
         # not exist, or returns a handle to the existing one.
