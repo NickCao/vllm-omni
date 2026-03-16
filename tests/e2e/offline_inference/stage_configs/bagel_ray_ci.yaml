@@ -17,7 +17,6 @@ stage_args:
       enforce_eager: true
       trust_remote_code: true
       engine_output_type: text
-      distributed_executor_backend: "mp"
       enable_prefix_caching: false
       max_num_batched_tokens: 32768
       tensor_parallel_size: 1
@@ -53,7 +52,6 @@ stage_args:
       enforce_eager: true
       trust_remote_code: true
       engine_output_type: image
-      distributed_executor_backend: "mp"
       enable_prefix_caching: false
       max_num_batched_tokens: 32768
       tensor_parallel_size: 1
