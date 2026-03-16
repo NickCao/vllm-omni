@@ -219,7 +219,16 @@ class RayConnector(OmniConnectorBase):
                 time.sleep(sleep_s)
 
         self._metrics["timeouts"] += 1
-        logger.warning("RayConnector: timeout waiting for %s", key)
+        try:
+            stored_keys = ray.get(self._ref_store.keys.remote())
+            logger.warning(
+                "RayConnector: timeout waiting for %s, "
+                "stored keys: %s",
+                key,
+                stored_keys,
+            )
+        except Exception:
+            logger.warning("RayConnector: timeout waiting for %s", key)
         return None
 
     def cleanup(self, request_id: str) -> None:
