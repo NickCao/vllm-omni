@@ -186,11 +186,22 @@ def start_ray_actor(
         def run(self, func, *args, **kwargs):
             return func(*args, **kwargs)
 
+    # Propagate Ray cluster address, namespace, and PYTHONPATH to
+    # the actor so that any subprocesses it spawns (e.g. vLLM's
+    # EngineCore) can join the same cluster and namespace.
+    env_vars = {
+        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+        "CUDA_LAUNCH_BLOCKING": "1",
+    }
+    for key in ("RAY_ADDRESS", "RAY_NAMESPACE"):
+        if key in os.environ:
+            env_vars[key] = os.environ[key]
+
     worker_actor = OmniStageRayWorker.options(
         scheduling_strategy=PlacementGroupSchedulingStrategy(
             placement_group=placement_group, placement_group_bundle_index=placement_group_bundle_index
         ),
-        runtime_env={"env_vars": {"PYTHONPATH": os.environ.get("PYTHONPATH", "")}, "CUDA_LAUNCH_BLOCKING": "1"},
+        runtime_env={"env_vars": env_vars},
     ).remote()
 
     task_ref = worker_actor.run.remote(worker_entry_fn, *args, **kwargs)
