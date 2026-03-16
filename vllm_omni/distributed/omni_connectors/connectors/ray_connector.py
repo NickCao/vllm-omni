@@ -126,9 +126,11 @@ class RayConnector(OmniConnectorBase):
             name=self._actor_name,
             get_if_exists=True,
         ).remote()
+        ns = ray.get_runtime_context().namespace
         logger.info(
-            "RayConnector: obtained RayRefStore actor '%s'",
+            "RayConnector: obtained RayRefStore actor '%s' (namespace=%s)",
             self._actor_name,
+            ns,
         )
 
     # ------------------------------------------------------------------
@@ -221,10 +223,12 @@ class RayConnector(OmniConnectorBase):
         self._metrics["timeouts"] += 1
         try:
             stored_keys = ray.get(self._ref_store.keys.remote())
+            ns = ray.get_runtime_context().namespace
             logger.warning(
                 "RayConnector: timeout waiting for %s, "
-                "stored keys: %s",
+                "namespace: %s, stored keys: %s",
                 key,
+                ns,
                 stored_keys,
             )
         except Exception:
