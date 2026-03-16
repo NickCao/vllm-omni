@@ -106,6 +106,15 @@ def initialize_ray_cluster(address: str | None = None):
         runtime_env = {"env_vars": {"PYTHONPATH": os.environ.get("PYTHONPATH", "")}}
         ray.init(address=address, ignore_reinit_error=True, runtime_env=runtime_env)
 
+    # Propagate the cluster address to child processes (e.g. vLLM's
+    # EngineCore subprocess) so that ray.init(address="auto") can
+    # discover the cluster without relying on session files.
+    if "RAY_ADDRESS" not in os.environ and ray.is_initialized():
+        try:
+            os.environ["RAY_ADDRESS"] = ray.get_runtime_context().gcs_address
+        except Exception:
+            pass
+
 
 def create_placement_group(number_of_stages: int, address: str | None = None, strategy: str = "PACK") -> PlacementGroup:
     """Create a placement group for the given number of stages.
