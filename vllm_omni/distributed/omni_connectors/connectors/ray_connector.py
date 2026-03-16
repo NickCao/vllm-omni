@@ -7,6 +7,8 @@ from typing import Any
 import ray
 from ray import ObjectRef
 
+from vllm_omni.distributed.ray_utils.utils import initialize_ray_cluster
+
 from ..utils.logging import get_connector_logger
 from .base import OmniConnectorBase
 
@@ -116,7 +118,7 @@ class RayConnector(OmniConnectorBase):
             return
 
         if not ray.is_initialized():
-            ray.init(address="auto", ignore_reinit_error=True)
+            initialize_ray_cluster()
 
         # get_if_exists=True atomically creates the actor if it does
         # not exist, or returns a handle to the existing one.
