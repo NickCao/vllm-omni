@@ -851,6 +851,20 @@ class QwenImageTransformer2DModel(CachedTransformer):
         "add_kv_proj": ["add_q_proj", "add_k_proj", "add_v_proj"],
     }
 
+    @staticmethod
+    def _is_transformer_block(name: str, module) -> bool:
+        """Match transformer blocks for HSDP sharding (e.g., transformer_blocks.0, transformer_blocks.1).
+
+        Unlike Wan2.2 which can rely on ``name.split('.')[-1].isdigit()``,
+        QwenImageTransformerBlock contains nn.Sequential (img_mod, txt_mod)
+        and nn.ModuleList (img_mlp.net, txt_mlp.net) whose children also
+        produce digit-suffixed names (e.g. ``transformer_blocks.0.img_mod.0``).
+        Using isinstance avoids those false positives.
+        """
+        return isinstance(module, QwenImageTransformerBlock)
+
+    _hsdp_shard_conditions = [_is_transformer_block]
+
     # Sequence Parallelism plan (following diffusers' _cp_plan pattern)
     # Similar to Z-Image's UnifiedPrepare, we use ImageRopePrepare to create
     # a module boundary where _sp_plan can shard hidden_states and vid_freqs together.
