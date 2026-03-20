@@ -45,6 +45,9 @@ def talker2code2wav(
             ref_code_len = 0
         # Code2Wav expects codebook-major flat: [Q*num_frames]
         codec_codes = audio_codes.transpose(0, 1).cpu().reshape(-1).tolist()
+        # Wrap ref_code_len in a list: serialize_additional_information()
+        # only preserves tensor and list values; plain ints are dropped.
+        # The consumer (Qwen3TTSCode2Wav.forward) unwraps the list.
         additional_information = {"left_context_size": [ref_code_len]} if ref_code_len > 0 else None
         code2wav_inputs.append(
             OmniTokensPrompt(
