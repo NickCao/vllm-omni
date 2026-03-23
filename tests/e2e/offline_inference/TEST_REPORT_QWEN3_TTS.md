@@ -4,6 +4,22 @@
 **Branch:** `qwen3-tts-validation`
 **Commit:** `20eec2dd`
 
+## Changes from Previous Report (2026-03-19)
+
+- **vLLM upgraded from 0.17.0 to 0.18.0.** Required two fixes in
+  vllm-omni: lowering Code2Wav `gpu_memory_utilization` from 0.3 to
+  0.2 (upstream added more CUDA graph capture sizes consuming Talker
+  memory), and handling `left_context_size` as both int and list in
+  Code2Wav forward (non-async path wraps it in a list for serialization).
+- **All models now faster than real-time.** Base model RTF improved
+  from 1.1 (0.17.0) to 0.75 (0.18.0). CustomVoice RTF improved from
+  0.62 to 0.38. This is a vLLM 0.18.0 engine performance improvement,
+  not a config change.
+- **Test runtime reduced from 35 min to 32 min** despite subprocess
+  coverage overhead, due to faster model execution.
+- **Rebased onto latest upstream main** (includes PR #1816 Phase 1
+  multimodal output decoupling types).
+
 ## How to Reproduce
 
 ### Prerequisites
