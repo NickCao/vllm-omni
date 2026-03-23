@@ -189,10 +189,28 @@ markers = [
     "slow: Slow tests (may skip in quick CI)",
     "benchmark: Benchmark tests",
 ]
+# Worker processes use multiprocessing "spawn" (required by CUDA).
+# To track coverage into spawned workers, install a .pth file:
+#   echo 'import coverage; coverage.process_startup()' > \
+#     $(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/coverage_subprocess.pth
+# Then run with:  COVERAGE_PROCESS_START=pyproject.toml pytest --cov=vllm_omni ...
 filterwarnings = [
     "ignore:.*does not have '__test__' attribute.*:UserWarning",
     "ignore:.*does not have '__bases__' attribute.*:UserWarning",
+    "ignore:.*builtin type Swig.*:DeprecationWarning",
+    "ignore:.*builtin type swigvarlink.*:DeprecationWarning",
+    "ignore:.*torch\\.jit\\.script_method.*:DeprecationWarning",
+    "ignore:.*image_processor_class argument is deprecated.*:FutureWarning",
+    "ignore:.*Unknown config option.*asyncio_mode.*:pytest.PytestConfigWarning",
 ]
+
+[tool.coverage.run]
+source = ["vllm_omni"]
+parallel = true
+concurrency = ["multiprocessing"]
+
+[tool.coverage.report]
+skip_covered = true
 
 [tool.typos.default]
 extend-ignore-identifiers-re = [
