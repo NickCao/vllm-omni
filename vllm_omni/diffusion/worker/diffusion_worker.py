@@ -16,7 +16,6 @@ from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 import torch
-import zmq
 from vllm.config import CompilationConfig, DeviceConfig, VllmConfig, set_current_vllm_config
 from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
 from vllm.logger import init_logger
@@ -384,9 +383,6 @@ class WorkerProc:
         self.od_config = od_config
         self.gpu_id = gpu_id
 
-        # Inter-process Communication
-        self.context = zmq.Context(io_threads=2)
-
         # Initialize MessageQueue reader from handle
         self.mq = MessageQueue.create_from_handle(broadcast_handle, gpu_id)
 
@@ -502,18 +498,13 @@ class WorkerProc:
                     )
                     output = DiffusionOutput(error=str(e))
 
-                try:
-                    self.return_result(output)
-                except zmq.ZMQError as e:
-                    logger.error(f"ZMQ error sending reply: {e}")
-                    continue
+                self.return_result(output)
 
         logger.info("event loop terminated.")
         try:
             self.worker.shutdown()
         except Exception as exc:
             logger.warning("Worker %s: Shutdown encountered an error: %s", self.gpu_id, exc)
-        self.context.term()
 
     @staticmethod
     def worker_main(
@@ -597,7 +588,7 @@ class WorkerWrapperBase:
     def _prepare_worker_class(self) -> type:
         """
         Prepare the worker class with optional extension.
-        Dynamically extends GPUWorker with worker_extension_cls if provided.
+        Dynamically extends DiffusionWorker with worker_extension_cls if provided.
 
         Returns:
             The worker class (potentially extended)
