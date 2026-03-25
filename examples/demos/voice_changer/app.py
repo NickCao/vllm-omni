@@ -98,9 +98,7 @@ def _auto_transcribe_ref(ref_audio: tuple[int, np.ndarray] | None) -> str:
 
 def _pcm_to_wav_bytes(pcm: bytes, sr: int = SAMPLE_RATE) -> bytes:
     """Convert raw PCM16 bytes to a WAV byte buffer for Gradio streaming."""
-    samples = np.array(
-        struct.unpack(f"<{len(pcm) // 2}h", pcm), dtype=np.float32
-    ) / 32768.0
+    samples = np.array(struct.unpack(f"<{len(pcm) // 2}h", pcm), dtype=np.float32) / 32768.0
     buf = io.BytesIO()
     sf.write(buf, samples, sr, format="WAV")
     return buf.getvalue()
@@ -158,9 +156,7 @@ def _ws_receiver_thread(
                         if payload.get("type") == "session.done":
                             break
                         if payload.get("type") == "error":
-                            chunk_queue.put(
-                                RuntimeError(payload.get("message", "server error"))
-                            )
+                            chunk_queue.put(RuntimeError(payload.get("message", "server error")))
                             return
         except Exception as e:
             chunk_queue.put(e)
@@ -177,7 +173,7 @@ _BYTES_PER_SEC = SAMPLE_RATE * 2
 # Buffer a longer first chunk to build playback headroom, then use
 # shorter chunks for lower latency on subsequent yields.
 _FIRST_CHUNK_BYTES = _BYTES_PER_SEC * 5  # 5 seconds
-_NEXT_CHUNK_BYTES = _BYTES_PER_SEC      # 1 second
+_NEXT_CHUNK_BYTES = _BYTES_PER_SEC  # 1 second
 
 
 def _streaming_clone(
@@ -325,9 +321,7 @@ def build_ui(server_url: str) -> gr.Blocks:
 
         with gr.Tabs():
             with gr.TabItem("Voice to Voice"):
-                gr.Markdown(
-                    "Record yourself speaking, then hear it in the cloned voice."
-                )
+                gr.Markdown("Record yourself speaking, then hear it in the cloned voice.")
                 voice_input = gr.Audio(
                     label="Your voice (press record and speak)",
                     sources=["microphone"],
@@ -427,15 +421,9 @@ def main():
         default="localhost:8000",
         help="vllm-omni server host:port (default: localhost:8000)",
     )
-    parser.add_argument(
-        "--host", default="0.0.0.0", help="Gradio bind address (default: 0.0.0.0)"
-    )
-    parser.add_argument(
-        "--port", type=int, default=7860, help="Gradio UI port (default: 7860)"
-    )
-    parser.add_argument(
-        "--share", action="store_true", help="Create a public Gradio link"
-    )
+    parser.add_argument("--host", default="0.0.0.0", help="Gradio bind address (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=3000, help="Gradio UI port (default: 3000)")
+    parser.add_argument("--share", action="store_true", help="Create a public Gradio link")
     args = parser.parse_args()
 
     print("Loading Whisper model...", flush=True)
