@@ -243,7 +243,7 @@ while True:
 
 ## 3. Worker
 
-**Location**: `vllm_omni/diffusion/worker/gpu_worker.py`
+**Location**: `vllm_omni/diffusion/worker/diffusion_worker.py`
 
 ### Architecture
 
@@ -256,9 +256,6 @@ Workers are **independent processes** that execute the actual model inference. E
 ```python
 class WorkerProc:
     def __init__(self, od_config, gpu_id, broadcast_handle):
-        # Initialize ZMQ context for IPC
-        self.context = zmq.Context(io_threads=2)
-
         # Connect to broadcast queue (receive requests)
         self.mq = MessageQueue.create_from_handle(broadcast_handle, gpu_id)
 
@@ -266,13 +263,13 @@ class WorkerProc:
         if gpu_id == 0:
             self.result_mq = MessageQueue(n_reader=1, ...)
 
-        # Initialize GPU worker
-        self.worker = GPUWorker(local_rank=gpu_id, rank=gpu_id, od_config=od_config)
+        # Initialize worker
+        self.worker = DiffusionWorker(local_rank=gpu_id, rank=gpu_id, od_config=od_config)
 ```
 
 **Initialization Steps**:
 
-1. **IPC Setup**: Creates ZMQ context and message queues
+1. **IPC Setup**: Creates shared-memory message queues for request broadcast and result collection
 
 2. **Distributed Environment Setup**: Initializes PyTorch distributed communication
 
@@ -286,11 +283,11 @@ class WorkerProc:
 
 4. **Cache Setup**: Enables cache backend if configured.
 
-#### 3.2 GPU Worker
+#### 3.2 DiffusionWorker
 
 ```python
-class GPUWorker:
-    def init_device_and_model(self):
+class DiffusionWorker:
+    def init_device(self):
         # Set distributed environment variables
         os.environ["RANK"] = str(rank)
         os.environ["WORLD_SIZE"] = str(world_size)
@@ -306,25 +303,22 @@ class GPUWorker:
             pipeline_parallel_size=parallel_config.pipeline_parallel_size,
         )
 
-        # Load model
-        model_loader = DiffusersPipelineLoader(load_config)
-        self.pipeline = model_loader.load_model(od_config, load_device=f"cuda:{rank}")
-
-        # Setup cache backend
-        from vllm_omni.diffusion.cache.selector import get_cache_backend
-        self.cache_backend = get_cache_backend(od_config.cache_backend, od_config.cache_config)
-
-        if self.cache_backend is not None:
-            self.cache_backend.enable(self.pipeline)
+    def load_model(self, load_format="default", custom_pipeline_name=None):
+        # Load model via DiffusionModelRunner
+        self.model_runner.load_model(
+            memory_pool_context_fn=self._maybe_get_memory_pool_context,
+            load_format=load_format,
+            custom_pipeline_name=custom_pipeline_name,
+        )
 ```
 
 **Key Features**:
 
 - **Tensor Parallelism**: Supports multi-GPU tensor parallelism via PyTorch distributed
 
-- **Model Loading**: Uses `DiffusersPipelineLoader` for efficient weight loading
+- **Model Loading**: Delegates to `DiffusionModelRunner` for model loading and execution
 
-- **Cache Integration**: Enables cache backends (TeaCache, cache-dit, etc.) transparently
+- **Separation of Concerns**: `DiffusionWorker` handles infrastructure (device, distributed env, memory), while `DiffusionModelRunner` handles model operations (loading, compilation, execution)
 
 #### 3.3 Worker Busy Loop
 
@@ -364,21 +358,9 @@ def worker_busy_loop(self):
 #### 3.4 Model Execution
 
 ```python
-@torch.inference_mode()
-def execute_model(self, reqs: list[OmniDiffusionRequest], od_config):
-    req = reqs[0]  # TODO: support batching
-
-    # Refresh cache backend if enabled
-    if self.cache_backend is not None and self.cache_backend.is_enabled():
-        self.cache_backend.refresh(self.pipeline, req.num_inference_steps)
-
-    # Set forward context for parallelism
-    with set_forward_context(
-        vllm_config=self.vllm_config,
-        omni_diffusion_config=self.od_config
-    ):
-        output = self.pipeline.forward(req)
-    return output
+def execute_model(self, req: OmniDiffusionRequest, od_config):
+    # Delegate to DiffusionModelRunner
+    return self.model_runner.execute_model(req)
 ```
 
 The model execution leverages multiple parallelism strategies that are transparently applied during the forward pass. The `set_forward_context()` context manager makes parallel group information available throughout the forward pass:
@@ -923,7 +905,7 @@ def initialize_model_parallel(
 
 4. Worker Execution
    └─> WorkerProc.worker_busy_loop()
-       └─> GPUWorker.execute_model(reqs)
+       └─> DiffusionWorker.execute_model(req)
            └─> Pipeline.forward(req)
                ├─> encode_prompt()
                ├─> prepare_latents()
