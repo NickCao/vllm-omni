@@ -117,30 +117,58 @@ resource "aws_vpc_security_group_ingress_rule" "default-ipv6" {
   tags = local.tags
 }
 
-resource "aws_vpc_security_group_ingress_rule" "demo-ipv4" {
+resource "aws_vpc_security_group_ingress_rule" "http-ipv4" {
   security_group_id = aws_security_group.default.id
 
   cidr_ipv4   = "0.0.0.0/0"
   ip_protocol = "tcp"
 
-  from_port = 3000
-  to_port   = 3000
+  from_port = 80
+  to_port   = 80
 
-  description = "IPv4 allow demo app inbound"
+  description = "IPv4 allow HTTP inbound"
 
   tags = local.tags
 }
 
-resource "aws_vpc_security_group_ingress_rule" "demo-ipv6" {
+resource "aws_vpc_security_group_ingress_rule" "http-ipv6" {
   security_group_id = aws_security_group.default.id
 
   cidr_ipv6   = "::/0"
   ip_protocol = "tcp"
 
-  from_port = 3000
-  to_port   = 3000
+  from_port = 80
+  to_port   = 80
 
-  description = "IPv6 allow demo app inbound"
+  description = "IPv6 allow HTTP inbound"
+
+  tags = local.tags
+}
+
+resource "aws_vpc_security_group_ingress_rule" "https-ipv4" {
+  security_group_id = aws_security_group.default.id
+
+  cidr_ipv4   = "0.0.0.0/0"
+  ip_protocol = "tcp"
+
+  from_port = 443
+  to_port   = 443
+
+  description = "IPv4 allow HTTPS inbound"
+
+  tags = local.tags
+}
+
+resource "aws_vpc_security_group_ingress_rule" "https-ipv6" {
+  security_group_id = aws_security_group.default.id
+
+  cidr_ipv6   = "::/0"
+  ip_protocol = "tcp"
+
+  from_port = 443
+  to_port   = 443
+
+  description = "IPv6 allow HTTPS inbound"
 
   tags = local.tags
 }
