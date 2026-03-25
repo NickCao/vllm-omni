@@ -117,6 +117,34 @@ resource "aws_vpc_security_group_ingress_rule" "default-ipv6" {
   tags = local.tags
 }
 
+resource "aws_vpc_security_group_ingress_rule" "demo-ipv4" {
+  security_group_id = aws_security_group.default.id
+
+  cidr_ipv4   = "0.0.0.0/0"
+  ip_protocol = "tcp"
+
+  from_port = 3000
+  to_port   = 3000
+
+  description = "IPv4 allow demo app inbound"
+
+  tags = local.tags
+}
+
+resource "aws_vpc_security_group_ingress_rule" "demo-ipv6" {
+  security_group_id = aws_security_group.default.id
+
+  cidr_ipv6   = "::/0"
+  ip_protocol = "tcp"
+
+  from_port = 3000
+  to_port   = 3000
+
+  description = "IPv6 allow demo app inbound"
+
+  tags = local.tags
+}
+
 resource "aws_vpc_security_group_egress_rule" "default-ipv4" {
   security_group_id = aws_security_group.default.id
 
