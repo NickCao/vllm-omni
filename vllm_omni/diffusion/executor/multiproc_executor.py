@@ -6,7 +6,6 @@ import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import zmq
 from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
 from vllm.logger import init_logger
 
@@ -303,8 +302,6 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
                         )
 
                     responses.append(response)
-                except zmq.error.Again as e:
-                    raise TimeoutError(f"RPC call to {method} timed out.") from e
                 except TimeoutError as e:
                     raise TimeoutError(f"RPC call to {method} timed out.") from e
 
