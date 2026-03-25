@@ -1,0 +1,6 @@
+owner         = "ncao"
+project       = "vllm"
+experiment    = "01"
+ami           = "ami-052266c3e21dff7db"
+instance_type = "g4dn.xlarge"
+key_name      = "ncao2"
