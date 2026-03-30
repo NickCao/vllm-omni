@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterable
 from typing import Any
 
 import torch
 import torch.nn as nn
+from safetensors.torch import load_file
 from transformers.utils.hub import cached_file
 from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.logger import init_logger
+from vllm.platforms import current_platform
 
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 
-from .qwen3_tts_tokenizer import Qwen3TTSTokenizer
+from .tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
+    Qwen3TTSTokenizerV2Config,
+)
+from .tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+    Qwen3TTSTokenizerV2Decoder,
+)
 
 logger = init_logger(__name__)
 
@@ -35,108 +43,26 @@ class Qwen3TTSCode2Wav(nn.Module):
         self.has_postprocess = False
         self.enable_update_additional_information = True
         self.requires_raw_input_tokens = True
-
-        self._speech_tokenizer: Qwen3TTSTokenizer | None = None
-        self._decoder: nn.Module | None = None
-        self._num_quantizers: int | None = None
-        self._output_sample_rate: int | None = None
-        self._total_upsample: int | None = None
         self._logged_codec_stats = False
 
-    @staticmethod
-    def _module_device(module: nn.Module) -> torch.device:
-        try:
-            return next(module.parameters()).device
-        except StopIteration:
-            for _, buf in module.named_buffers(recurse=True):
-                return buf.device
-            return torch.device("cpu")
-
-    def _ensure_speech_tokenizer_loaded(self) -> None:
-        if self._decoder is not None:
-            return
-
+        # Load speech tokenizer config and construct the decoder as a
+        # proper sub-module so it is visible to vLLM's profiling.
         cfg_path = cached_file(self.model_path, "speech_tokenizer/config.json")
         if cfg_path is None:
             raise ValueError(f"{self.model_path}/speech_tokenizer/config.json not found")
-        speech_tokenizer_dir = os.path.dirname(cfg_path)
+        self._speech_tokenizer_dir = os.path.dirname(cfg_path)
 
-        prep_cfg = cached_file(self.model_path, "speech_tokenizer/preprocessor_config.json")
-        if prep_cfg is None:
-            raise ValueError(
-                f"{self.model_path}/speech_tokenizer/preprocessor_config.json not found. "
-                "Please make sure the checkpoint contains the required HF preprocessing files."
-            )
+        with open(cfg_path) as f:
+            raw_config = json.load(f)
+        tok_config = Qwen3TTSTokenizerV2Config(**raw_config)
+        dec_config = tok_config.decoder_config
 
-        tok = Qwen3TTSTokenizer.from_pretrained(
-            speech_tokenizer_dir,
-            torch_dtype=torch.float32,
-            load_feature_extractor=False,
-        )
+        self._num_quantizers = int(dec_config.num_quantizers)
+        self._output_sample_rate = int(tok_config.output_sample_rate)
 
-        if tok.model is not None:
-            tok.model.to(device=self.vllm_config.device_config.device)
-            tok.device = self._module_device(tok.model)
-
-        dec_cfg = getattr(tok.model.config, "decoder_config", None)
-        num_q = getattr(dec_cfg, "num_quantizers", None) if dec_cfg is not None else None
-        if num_q is None:
-            raise ValueError("speech_tokenizer decoder_config.num_quantizers not found")
-        num_q = int(num_q)
-        if num_q <= 0:
-            raise ValueError(f"Invalid speech_tokenizer num_quantizers={num_q}")
-
-        try:
-            upsample = int(tok.get_decode_upsample_rate())
-        except Exception as e:
-            raise ValueError(f"Failed to get decode upsample rate: {e}") from e
-        if upsample <= 0:
-            raise ValueError(f"Invalid decode upsample rate: {upsample}")
-
-        try:
-            out_sr = int(tok.get_output_sample_rate())
-        except Exception as e:
-            raise ValueError(f"Failed to get output sample rate: {e}") from e
-
-        decoder = tok.model.decoder
-        decoder.eval()
-
-        self._speech_tokenizer = tok
-        self._decoder = decoder
-        self._num_quantizers = num_q
-        self._output_sample_rate = out_sr
-        self._total_upsample = int(decoder.total_upsample)
-
-        # Precompute SnakeBeta exp caches (benefits both Triton and eager paths)
-        if hasattr(decoder, "precompute_snake_caches"):
-            decoder.precompute_snake_caches()
-
-        if hasattr(decoder, "enable_cudagraph"):
-            device = self._module_device(decoder)
-            if device.type == "cuda":
-                try:
-                    chunk_frames = 0
-                    left_frames = 0
-
-                    model_cfg = getattr(self.vllm_config, "model_config", None)
-                    connector_cfg = getattr(model_cfg, "stage_connector_config", None)
-                    extra_cfg = (
-                        connector_cfg.get("extra", connector_cfg)
-                        if isinstance(connector_cfg, dict)
-                        else getattr(connector_cfg, "extra", None)
-                    )
-                    if isinstance(extra_cfg, dict):
-                        chunk_frames = int(extra_cfg.get("codec_chunk_frames") or 0)
-                        left_frames = int(extra_cfg.get("codec_left_context_frames") or 0)
-
-                    decoder.enable_cudagraph(
-                        device=device,
-                        codec_chunk_frames=chunk_frames,
-                        codec_left_context_frames=left_frames,
-                    )
-                    logger.info("Code2Wav decoder CUDA Graph enabled")
-                except Exception:
-                    logger.warning("Failed to enable CUDA Graph for Code2Wav decoder", exc_info=True)
+        self.decoder = Qwen3TTSTokenizerV2Decoder._from_config(dec_config)
+        self.decoder.eval()
+        self._total_upsample = int(self.decoder.total_upsample)
 
     def embed_input_ids(self, input_ids: torch.Tensor, **_: Any) -> torch.Tensor:
         # This stage ignores token embeddings. Keep a stable dummy embedding for vLLM runner.
@@ -189,15 +115,10 @@ class Qwen3TTSCode2Wav(nn.Module):
         Length management is done here instead of relying on HF's padding=-1
         sentinel logic.
         """
-        self._ensure_speech_tokenizer_loaded()
-        assert self._decoder is not None
-        assert self._num_quantizers is not None
-        assert self._total_upsample is not None
-
-        decoder = self._decoder
-        q = int(self._num_quantizers)
-        upsample = int(self._total_upsample)
-        sr_val = int(self._output_sample_rate)
+        decoder = self.decoder
+        q = self._num_quantizers
+        upsample = self._total_upsample
+        sr_val = self._output_sample_rate
         sr_tensor = torch.tensor(sr_val, dtype=torch.int32)
         empty = torch.zeros((0,), dtype=torch.float32)
 
@@ -329,6 +250,83 @@ class Qwen3TTSCode2Wav(nn.Module):
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        # SpeechTokenizer weights live under `speech_tokenizer/` and are loaded
-        # lazily from that directory. Ignore main checkpoint weights.
-        return set()
+        # Load speech tokenizer decoder weights from safetensors.
+        # Only decoder.* keys are needed; encoder.* keys are skipped.
+        safetensors_path = os.path.join(self._speech_tokenizer_dir, "model.safetensors")
+        if not os.path.isfile(safetensors_path):
+            raise FileNotFoundError(
+                f"Speech tokenizer weights not found at {safetensors_path}. "
+                "All Qwen3-TTS checkpoints store decoder weights as a single "
+                "speech_tokenizer/model.safetensors file."
+            )
+        device = self.vllm_config.device_config.device
+
+        # Strip the "decoder." prefix — the safetensors file stores weights
+        # as "decoder.xxx" but our sub-module is self.decoder directly.
+        all_weights = load_file(safetensors_path, device=str(device))
+        state_dict = {
+            k.removeprefix("decoder."): v.to(dtype=torch.float32)
+            for k, v in all_weights.items()
+            if k.startswith("decoder.")
+        }
+        del all_weights
+        self.decoder.load_state_dict(state_dict, strict=True)
+        loaded_names = {"decoder." + k for k in state_dict}
+        del state_dict
+        logger.info("Code2Wav decoder weights loaded from %s", safetensors_path)
+
+        # Precompute SnakeBeta exp caches (benefits both Triton and eager).
+        if hasattr(self.decoder, "precompute_snake_caches"):
+            self.decoder.precompute_snake_caches()
+
+        # Enable CUDA graph capture with memory budget enforcement.
+        if hasattr(self.decoder, "enable_cudagraph") and device.type == "cuda":
+            try:
+                chunk_frames = 0
+                left_frames = 0
+
+                model_cfg = getattr(self.vllm_config, "model_config", None)
+                connector_cfg = getattr(model_cfg, "stage_connector_config", None)
+                extra_cfg = (
+                    connector_cfg.get("extra", connector_cfg)
+                    if isinstance(connector_cfg, dict)
+                    else getattr(connector_cfg, "extra", None)
+                )
+                if isinstance(extra_cfg, dict):
+                    chunk_frames = int(extra_cfg.get("codec_chunk_frames") or 0)
+                    left_frames = int(extra_cfg.get("codec_left_context_frames") or 0)
+
+                # Compute minimum free GPU memory to preserve for other
+                # stages sharing this device.  CUDA graph capture stops
+                # when free memory drops below this threshold.
+                min_free_bytes: int | None = None
+                gpu_util = self.vllm_config.cache_config.gpu_memory_utilization
+                if gpu_util < 1:
+                    free, total_gpu = current_platform.mem_get_info(device)
+                    budget = int(total_gpu * gpu_util)
+                    min_free_bytes = total_gpu - budget
+                    logger.info(
+                        "Code2Wav memory budget: %.0f MiB, "
+                        "min free to preserve: %.0f MiB "
+                        "(gpu_util=%.2f, free=%.0f MiB, total=%.0f MiB)",
+                        budget / 1024**2,
+                        min_free_bytes / 1024**2,
+                        gpu_util,
+                        free / 1024**2,
+                        total_gpu / 1024**2,
+                    )
+
+                self.decoder.enable_cudagraph(
+                    device=device,
+                    codec_chunk_frames=chunk_frames,
+                    codec_left_context_frames=left_frames,
+                    min_free_bytes=min_free_bytes,
+                )
+                logger.info("Code2Wav decoder CUDA Graph enabled")
+            except Exception:
+                logger.warning(
+                    "Failed to enable CUDA Graph for Code2Wav decoder",
+                    exc_info=True,
+                )
+
+        return loaded_names

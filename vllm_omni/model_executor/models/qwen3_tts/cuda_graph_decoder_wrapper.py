@@ -10,6 +10,7 @@ reducing kernel launch overhead during inference.
 import torch
 from torch.cuda import CUDAGraph
 from vllm.logger import init_logger
+from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
 
@@ -88,6 +89,7 @@ class CUDAGraphDecoderWrapper:
         dtype: torch.dtype = torch.long,
         codec_chunk_frames: int = 0,
         codec_left_context_frames: int = 0,
+        min_free_bytes: int | None = None,
     ):
         if device.type != "cuda" or not self.enabled or self._warmed_up:
             return
@@ -112,6 +114,15 @@ class CUDAGraphDecoderWrapper:
         torch.cuda.synchronize(device)
 
         for size in self.capture_sizes:
+            if min_free_bytes is not None:
+                free, _ = current_platform.mem_get_info(device)
+                if free < min_free_bytes:
+                    logger.info(
+                        "  Stopping CUDA Graph capture: %.0f MiB free < %.0f MiB min reserve",
+                        free / 1024**2,
+                        min_free_bytes / 1024**2,
+                    )
+                    break
             try:
                 self._capture(size, device, dtype)
                 logger.info("  Captured CUDA Graph for size=%d", size)

@@ -974,6 +974,7 @@ class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
         device: torch.device | None = None,
         codec_chunk_frames: int = 0,
         codec_left_context_frames: int = 0,
+        min_free_bytes: int | None = None,
     ):
         from ..cuda_graph_decoder_wrapper import CUDAGraphDecoderWrapper
 
@@ -994,6 +995,7 @@ class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
             dtype=torch.long,
             codec_chunk_frames=codec_chunk_frames,
             codec_left_context_frames=codec_left_context_frames,
+            min_free_bytes=min_free_bytes,
         )
         self._cudagraph_enabled = True
         logger.info(
