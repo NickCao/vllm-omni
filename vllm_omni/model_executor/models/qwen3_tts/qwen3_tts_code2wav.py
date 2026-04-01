@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from safetensors.torch import load_file
+from safetensors import safe_open
 from transformers.utils.hub import cached_file
 from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context, is_forward_context_available
@@ -261,15 +261,14 @@ class Qwen3TTSCode2Wav(nn.Module):
             )
         device = self.vllm_config.device_config.device
 
-        # Strip the "decoder." prefix — the safetensors file stores weights
-        # as "decoder.xxx" but our sub-module is self.decoder directly.
-        all_weights = load_file(safetensors_path, device=str(device))
-        state_dict = {
-            k.removeprefix("decoder."): v.to(dtype=torch.float32)
-            for k, v in all_weights.items()
-            if k.startswith("decoder.")
-        }
-        del all_weights
+        # The safetensors file contains both encoder and decoder weights.
+        # Use safe_open to load only decoder keys, avoiding ~325 MiB of
+        # encoder weights ever touching GPU memory.
+        state_dict = {}
+        with safe_open(safetensors_path, framework="pt", device=str(device)) as f:
+            for key in f.keys():
+                if key.startswith("decoder."):
+                    state_dict[key.removeprefix("decoder.")] = f.get_tensor(key).to(dtype=torch.float32)
         self.decoder.load_state_dict(state_dict, strict=True)
         loaded_names = {"decoder." + k for k in state_dict}
         del state_dict
