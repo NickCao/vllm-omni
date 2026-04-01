@@ -8,6 +8,7 @@ actual model inference, not mocks.
 """
 
 import os
+import tempfile
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 os.environ["VLLM_TEST_CLEAN_GPU_MEMORY"] = "0"
@@ -15,6 +16,7 @@ os.environ["VLLM_TEST_CLEAN_GPU_MEMORY"] = "0"
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.conftest import OmniServerParams
 from tests.utils import hardware_test
@@ -41,6 +43,28 @@ def get_max_batch_size(size_type="few"):
     return batch_sizes.get(size_type, 5)
 
 
+def _make_tight_memory_stage_config():
+    """Create a stage config with gpu_memory_utilization=0.6 on the Talker.
+
+    Regression guard for issue #2316: with lazy Code2Wav weight loading,
+    higher gpu_memory_utilization leaves insufficient headroom for the
+    speech tokenizer decoder loaded on first forward(), causing OOM.
+    """
+    src = Path(get_stage_config("qwen3_tts.yaml"))
+    with open(src) as f:
+        cfg = yaml.safe_load(f)
+
+    for stage in cfg["stage_args"]:
+        if stage["engine_args"].get("model_stage") == "qwen3_tts":
+            stage["engine_args"]["gpu_memory_utilization"] = 0.6
+
+    tmp_dir = tempfile.mkdtemp(prefix="tts_tight_mem_")
+    dst = Path(tmp_dir) / "qwen3_tts_tight_memory.yaml"
+    with open(dst, "w") as f:
+        yaml.dump(cfg, f)
+    return str(dst), tmp_dir
+
+
 tts_server_params = [
     pytest.param(
         OmniServerParams(
@@ -49,7 +73,15 @@ tts_server_params = [
             server_args=["--trust-remote-code", "--disable-log-stats"],
         ),
         id="async_chunk",
-    )
+    ),
+    pytest.param(
+        OmniServerParams(
+            model=MODEL,
+            stage_config_path=_make_tight_memory_stage_config()[0],
+            server_args=["--trust-remote-code", "--disable-log-stats"],
+        ),
+        id="tight_memory",
+    ),
 ]
 
 
