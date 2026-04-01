@@ -616,8 +616,6 @@ class MiMoAudioLLMForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
         else:
             self.speech_embeddings_to_local = None
 
-        self._cached_new_audio_emb_by_req: dict[str, torch.Tensor] = {}
-
         # Pre-allocate audio_embeds buffer for CUDA graph capture to avoid dynamic allocation
         # Maximum sequence length set to 8192, can be adjusted according to actual needs
         self._max_audio_embeds_seq_len = 8192
@@ -906,14 +904,16 @@ class MiMoAudioLLMForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
 
         return merge_mm_embedding_info, has_merge_mm_embedding, kwargs
 
-    def _load_cached_state(self) -> tuple[DynamicCache | None, dict[str, torch.Tensor]]:
+    def _load_cached_state(
+        self,
+        runtime_additional_information: list[dict],
+    ) -> dict[str, torch.Tensor]:
         prev_new_audio_emb_by_req: dict[str, torch.Tensor] = {}
-
-        if hasattr(self, "_cached_new_audio_emb_by_req"):
-            for req_id, cached_emb in self._cached_new_audio_emb_by_req.items():
-                if req_id not in prev_new_audio_emb_by_req:
-                    prev_new_audio_emb_by_req[req_id] = cached_emb
-
+        for info in runtime_additional_information:
+            req_id = info.get("req_id")
+            cached_emb = info.get("new_audio_emb")
+            if req_id is not None and cached_emb is not None:
+                prev_new_audio_emb_by_req[req_id] = cached_emb
         return prev_new_audio_emb_by_req
 
     def _prepare_multimodal_embeddings_with_cache(
@@ -1038,7 +1038,7 @@ class MiMoAudioLLMForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
             kwargs=kwargs,
         )
 
-        prev_new_audio_emb_by_req = self._load_cached_state()
+        prev_new_audio_emb_by_req = self._load_cached_state(runtime_additional_information)
 
         # NOTE: In v1, inputs_embeds is always generated at model runner, this
         # condition is for v0 compatibility.
@@ -1085,30 +1085,24 @@ class MiMoAudioLLMForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
                     else:
                         batch_next_speech_tokens[req_idx] = torch.zeros_like(batch_next_speech_tokens[req_idx])
 
-        self._update_request_caches(request_ids, new_audio_emb_by_req)
+        self._update_request_caches(runtime_additional_information, new_audio_emb_by_req)
 
         return batch_next_speech_tokens, hidden_states
 
     def _update_request_caches(
         self,
-        request_ids: list[str] | None,
+        runtime_additional_information: list[dict],
         new_audio_emb_by_req: dict[str, torch.Tensor] | None,
     ) -> None:
-        # If new_audio_emb_by_req is generated, need to store it for next round use
-        # In multi-request scenarios, need to store each request's new_audio_emb based on request_id
-        if new_audio_emb_by_req is not None:
-            if request_ids:
-                for req_id in request_ids:
-                    if req_id in new_audio_emb_by_req:
-                        self._cached_new_audio_emb_by_req[req_id] = new_audio_emb_by_req[req_id]
-            else:
-                # Case without request_ids (backward compatibility)
-                # Use default key or first available key
-                if not self._cached_new_audio_emb_by_req:
-                    default_key = "default"
-                else:
-                    default_key = next(iter(self._cached_new_audio_emb_by_req.keys()))
-                self._cached_new_audio_emb_by_req[default_key] = next(iter(new_audio_emb_by_req.values()))
+        # Store new_audio_emb in model_intermediate_buffer via the
+        # per-request info dicts from runtime_additional_information.
+        # The model runner cleans up model_intermediate_buffer when a
+        # request finishes, so these entries do not leak.
+        if new_audio_emb_by_req:
+            for info in runtime_additional_information:
+                req_id = info.get("req_id")
+                if req_id is not None and req_id in new_audio_emb_by_req:
+                    info["new_audio_emb"] = new_audio_emb_by_req[req_id]
 
     def compute_logits(
         self,

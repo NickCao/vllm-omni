@@ -936,7 +936,15 @@ class OmniGPUModelRunner(GPUModelRunner):
                 setattr(self.requests[req_id], "additional_information_cpu", info_dict)
 
     def _gather_runtime_additional_information(self) -> list[dict]:
-        """Gather per-request model_intermediate_buffer in batch order."""
+        """Gather per-request model_intermediate_buffer in batch order.
+
+        Uses ``setdefault`` so every active request is guaranteed to have
+        an entry in ``model_intermediate_buffer``.  This lets models
+        write per-request state back through the returned dicts and
+        have it survive across forward calls — cleanup happens
+        automatically when the request finishes (``pop`` in
+        ``_update_states``).
+        """
         per_req_runtime_info = []
         for req_id in self.input_batch.req_ids:
             req_state = self.requests.get(req_id)
@@ -948,16 +956,9 @@ class OmniGPUModelRunner(GPUModelRunner):
             #   column_id = generated_len % (ar_width + 1)
             # and forces the EOL token when column_id == ar_width.
             generated_len = len(req_state.output_token_ids) if req_state is not None else 0
-            info = self.model_intermediate_buffer.get(req_id, {})
-            if info:
-                info["generated_len"] = generated_len
-                per_req_runtime_info.append(info)
-                if "thinker_reply_part_per_request" in info:
-                    q = info["thinker_reply_part_per_request"]
-                    if hasattr(q, "shape"):
-                        logger.debug(f"[OMNI] req={req_id} has thinker_reply_part_per_request queue shape: {q.shape}")
-            else:
-                per_req_runtime_info.append({})
+            info = self.model_intermediate_buffer.setdefault(req_id, {})
+            info["generated_len"] = generated_len
+            per_req_runtime_info.append(info)
         return per_req_runtime_info
 
     def _compute_request_token_spans(self, num_scheduled_tokens_np) -> list[tuple[int, int]]:
