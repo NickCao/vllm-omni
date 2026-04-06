@@ -180,9 +180,9 @@ def compute_mel_spectrogram(audio: np.ndarray, sr: int = 24000) -> torch.Tensor:
 @torch.inference_mode()
 def extract_embedding(encoder: torch.nn.Module, audio_path: str, device: str = "cpu") -> np.ndarray:
     """Extract a 1024-dim speaker embedding from an audio file."""
-    import librosa
+    from vllm.multimodal.media.audio import load_audio
 
-    audio, sr = librosa.load(audio_path, sr=None, mono=True)
+    audio, sr = load_audio(audio_path, sr=None, mono=True)
     mel = compute_mel_spectrogram(audio, sr).to(device)
     embedding = encoder(mel.to(next(encoder.parameters()).dtype))[0]
     return embedding.float().cpu().numpy()

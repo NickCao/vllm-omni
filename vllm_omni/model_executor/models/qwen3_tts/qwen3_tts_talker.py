@@ -871,7 +871,7 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
         Uses upstream vLLM's MediaConnector for http(s) URLs and ``file:``
         URIs, with unrestricted local access (offline inference is trusted).
         """
-        import librosa
+        from vllm.multimodal.media.audio import load_audio
 
         if self._is_url(x):
             from vllm.multimodal.media import MediaConnector
@@ -883,7 +883,7 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
             with io.BytesIO(wav_bytes) as f:
                 audio, sr = sf.read(f, dtype="float32", always_2d=False)
         else:
-            audio, sr = librosa.load(x, sr=None, mono=True)
+            audio, sr = load_audio(x, sr=None, mono=True)
 
         if isinstance(audio, np.ndarray) and audio.ndim > 1:
             audio = np.mean(audio, axis=-1)

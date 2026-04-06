@@ -4,11 +4,11 @@ import argparse
 import os
 from pathlib import Path
 
-import librosa
 import numpy as np
 import soundfile as sf
 from vllm import SamplingParams
 from vllm.assets.audio import AudioAsset
+from vllm.multimodal.media.audio import load_audio
 
 from vllm_omni.entrypoints.omni import Omni
 from vllm_omni.model_executor.models.cosyvoice3.config import CosyVoice3Config
@@ -85,7 +85,7 @@ def run_e2e():
         if not os.path.exists(args.audio_path):
             raise FileNotFoundError(f"Audio file not found: {args.audio_path}")
         # Load at native sample rate
-        audio_signal, sr = librosa.load(args.audio_path, sr=None)
+        audio_signal, sr = load_audio(args.audio_path, sr=None)
 
         # Validate sample rate before processing (similar to original CosyVoice)
         min_sr = 16000
