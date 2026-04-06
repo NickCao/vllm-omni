@@ -13,7 +13,6 @@ import soundfile as sf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from librosa.filters import mel as librosa_mel_fn
 from transformers import AutoTokenizer
 from transformers.activations import ACT2FN
 from transformers.utils.hub import cached_file
@@ -27,6 +26,7 @@ from vllm.model_executor.models.utils import AutoWeightsLoader, PPMissingLayer, 
 from vllm.sequence import IntermediateTensors
 
 from vllm_omni.model_executor.models.output_templates import OmniOutput
+from vllm_omni.utils.audio import mel_filter_bank
 from vllm_omni.utils.voice_cache import VoiceEmbeddingCache
 
 from .configuration_qwen3_tts import Qwen3TTSConfig, Qwen3TTSSpeakerEncoderConfig, Qwen3TTSTalkerConfig
@@ -258,14 +258,19 @@ def mel_spectrogram(
     fmax: int | None = None,
     center: bool = False,
 ) -> torch.Tensor:
-    """Calculate mel spectrogram of an input signal using librosa mel filterbank and torch STFT."""
+    """Calculate mel spectrogram of an input signal using torchaudio mel filterbank and torch STFT."""
     if torch.min(y) < -1.0:
         logger.warning("Min value of input waveform signal is %s", torch.min(y))
     if torch.max(y) > 1.0:
         logger.warning("Max value of input waveform signal is %s", torch.max(y))
     device = y.device
-    mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
-    mel_basis = torch.from_numpy(mel).float().to(device)
+    mel_basis = mel_filter_bank(
+        sr=sampling_rate,
+        n_fft=n_fft,
+        n_mels=num_mels,
+        fmin=fmin,
+        fmax=fmax,
+    ).to(device)
     hann_window = torch.hann_window(win_size).to(device)
     padding = (n_fft - hop_size) // 2
     y = torch.nn.functional.pad(y.unsqueeze(1), (padding, padding), mode="reflect").squeeze(1)

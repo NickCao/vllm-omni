@@ -151,9 +151,9 @@ def compute_mel_spectrogram(audio: np.ndarray, sr: int = 24000) -> torch.Tensor:
 
     y = torch.from_numpy(audio).unsqueeze(0).float()
 
-    from librosa.filters import mel as librosa_mel_fn
+    from vllm_omni.utils.audio import mel_filter_bank
 
-    mel_basis = torch.from_numpy(librosa_mel_fn(sr=24000, n_fft=1024, n_mels=128, fmin=0, fmax=12000)).float()
+    mel_basis = mel_filter_bank(sr=24000, n_fft=1024, n_mels=128, fmin=0, fmax=12000)
 
     n_fft = 1024
     hop_size = 256
