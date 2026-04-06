@@ -5,7 +5,7 @@ speaker encoder from a Qwen3-TTS checkpoint, then interpolates between them
 using SLERP and sends the result to the /v1/audio/speech API.
 
 Requirements:
-    pip install torch librosa soundfile numpy httpx
+    pip install torch resampy soundfile numpy httpx
 
 Examples:
     # Extract and save an embedding

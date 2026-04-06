@@ -10,7 +10,7 @@ model, for example:
 Requirements:
 - vllm with audio support
 - websockets
-- librosa
+- soundfile
 - numpy
 
 The script:
