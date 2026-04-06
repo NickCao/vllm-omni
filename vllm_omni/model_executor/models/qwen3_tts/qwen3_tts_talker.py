@@ -1089,9 +1089,9 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
         # Resample to 24kHz for speaker encoder.
         target_sr = int(getattr(self.config.speaker_encoder_config, "sample_rate", 24000))
         if sr != target_sr:
-            import librosa
+            from vllm.multimodal.audio import resample_audio_resampy
 
-            wav = librosa.resample(y=wav.astype(np.float32), orig_sr=int(sr), target_sr=target_sr)
+            wav = resample_audio_resampy(wav.astype(np.float32), orig_sr=int(sr), target_sr=target_sr)
             sr = target_sr
 
         # Follow official implementation: mel_spectrogram expects 24kHz.

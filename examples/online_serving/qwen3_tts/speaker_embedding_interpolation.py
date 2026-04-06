@@ -143,11 +143,11 @@ def _load_speaker_encoder_weights(encoder: torch.nn.Module, model_path: str) -> 
 
 def compute_mel_spectrogram(audio: np.ndarray, sr: int = 24000) -> torch.Tensor:
     """Compute 128-bin mel spectrogram matching Qwen3-TTS's extraction pipeline."""
-    import librosa
+    from vllm.multimodal.audio import resample_audio_resampy
 
     # Resample to 24kHz if needed
     if sr != 24000:
-        audio = librosa.resample(audio.astype(np.float32), orig_sr=sr, target_sr=24000)
+        audio = resample_audio_resampy(audio.astype(np.float32), orig_sr=sr, target_sr=24000)
 
     y = torch.from_numpy(audio).unsqueeze(0).float()
 
