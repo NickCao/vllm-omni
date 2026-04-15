@@ -105,7 +105,9 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
         logger.info("Starting server...")
 
         num_gpus = od_config.num_gpus
-        mp.set_start_method("spawn", force=True)
+        from vllm.utils.system_utils import get_mp_context
+
+        ctx = get_mp_context()
         processes = []
 
         # Extract worker_extension_cls and custom_pipeline_args from od_config
@@ -117,9 +119,9 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
         scheduler_pipe_writers = []
 
         for i in range(num_gpus):
-            reader, writer = mp.Pipe(duplex=False)
+            reader, writer = ctx.Pipe(duplex=False)
             scheduler_pipe_writers.append(writer)
-            process = mp.Process(
+            process = ctx.Process(
                 target=WorkerProc.worker_main,
                 args=(
                     i,  # rank
