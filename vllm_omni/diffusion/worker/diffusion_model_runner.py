@@ -21,7 +21,6 @@ from vllm.config import LoadConfig
 from vllm.logger import init_logger
 from vllm.utils.mem_utils import DeviceMemoryProfiler, GiB_bytes
 
-from vllm_omni.diffusion.cache.cache_dit_backend import cache_summary
 from vllm_omni.diffusion.cache.selector import get_cache_backend
 from vllm_omni.diffusion.compile import regionally_compile
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
@@ -285,6 +284,8 @@ class DiffusionModelRunner(OmniConnectorModelRunnerMixin):
                 and self.od_config.cache_backend == "cache_dit"
                 and self.od_config.enable_cache_dit_summary
             ):
+                from vllm_omni.diffusion.cache.cache_dit_backend import cache_summary
+
                 cache_summary(self.pipeline, details=True)
 
             return output
