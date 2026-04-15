@@ -158,11 +158,13 @@ class KokoroPipeline(nn.Module, SupportAudioOutput):
 
         device = self.device
         weight_path = os.path.join(self.model_path, self._weight_filename)
-        state_dicts = torch.load(weight_path, map_location="cpu", weights_only=True)
+        state_dicts = torch.load(weight_path, map_location=device, weights_only=True)
 
-        for key, state_dict in state_dicts.items():
+        for key in list(state_dicts.keys()):
+            state_dict = state_dicts.pop(key)
             if not hasattr(self, key):
                 logger.warning("Skipping unknown weight key: %s", key)
+                del state_dict
                 continue
             try:
                 getattr(self, key).load_state_dict(state_dict)
@@ -170,8 +172,10 @@ class KokoroPipeline(nn.Module, SupportAudioOutput):
                 # Handle potential module prefix mismatch.
                 cleaned = {k.removeprefix("module."): v for k, v in state_dict.items()}
                 getattr(self, key).load_state_dict(cleaned, strict=False)
+            del state_dict
 
-        self.to(device).eval()
+        del state_dicts
+        self.eval()
         logger.info("Kokoro pipeline loaded on %s", device)
 
         return {name for name, _ in self.named_parameters()}
@@ -253,7 +257,7 @@ class KokoroPipeline(nn.Module, SupportAudioOutput):
                     return self._load_voice(_DEFAULT_VOICE)
                 raise FileNotFoundError(f"Default voice '{_DEFAULT_VOICE}' not found")
 
-        pack = torch.load(voice_path, map_location="cpu", weights_only=True)
+        pack = torch.load(voice_path, map_location=self.device, weights_only=True)
         self._voices[voice_name] = pack
         return pack
 
@@ -379,7 +383,7 @@ class KokoroPipeline(nn.Module, SupportAudioOutput):
 
         # Load voice embedding.
         try:
-            voice_pack = self._load_voice(voice_name).to(self.device)
+            voice_pack = self._load_voice(voice_name)
         except Exception as e:
             return DiffusionOutput(error=f"Failed to load voice '{voice_name}': {e}")
 
