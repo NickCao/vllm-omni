@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.parametrizations import weight_norm
-from transformers import AlbertModel
 
 from vllm_omni.diffusion.models.kokoro.istftnet import AdainResBlk1d
 
@@ -193,8 +194,171 @@ class ProsodyPredictor(nn.Module):
         return F0.squeeze(1), N.squeeze(1)
 
 
-# https://github.com/yl4579/StyleTTS2/blob/main/Utils/PLBERT/util.py
-class CustomAlbert(AlbertModel):
-    def forward(self, *args, **kwargs):
-        outputs = super().forward(*args, **kwargs)
-        return outputs.last_hidden_state
+# ---------------------------------------------------------------------------
+# Standalone ALBERT (PL-BERT) -- replaces transformers.AlbertModel to avoid
+# pulling in the entire HuggingFace transformers library (~150-300 MB RSS).
+# ALBERT shares all transformer layer weights, so 12 "layers" use one set
+# of parameters.
+#
+# Module naming mirrors HuggingFace's AlbertModel exactly so that
+# state_dict keys from the upstream .pth checkpoint load without remapping.
+# ---------------------------------------------------------------------------
+
+
+class _AlbertEmbeddings(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.embedding_size, padding_idx=0)
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.embedding_size)
+        self.token_type_embeddings = nn.Embedding(2, config.embedding_size)
+        self.LayerNorm = nn.LayerNorm(config.embedding_size, eps=1e-12)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.register_buffer(
+            "position_ids", torch.arange(config.max_position_embeddings).unsqueeze(0), persistent=False
+        )
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        seq_length = input_ids.shape[1]
+        position_ids = self.position_ids[:, :seq_length]
+        embeddings = self.word_embeddings(input_ids)
+        embeddings = embeddings + self.position_embeddings(position_ids)
+        embeddings = embeddings + self.token_type_embeddings(torch.zeros_like(input_ids))
+        return self.dropout(self.LayerNorm(embeddings))
+
+
+class _AlbertAttention(nn.Module):
+    """Self-attention with post-LN residual (matches HF albert attention key names)."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.num_attention_heads = config.num_attention_heads
+        self.head_dim = config.hidden_size // config.num_attention_heads
+        self.all_head_size = self.num_attention_heads * self.head_dim
+        self.query = nn.Linear(config.hidden_size, self.all_head_size)
+        self.key = nn.Linear(config.hidden_size, self.all_head_size)
+        self.value = nn.Linear(config.hidden_size, self.all_head_size)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def forward(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        B, T, _ = hidden_states.shape
+        q = self.query(hidden_states).view(B, T, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        k = self.key(hidden_states).view(B, T, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        v = self.value(hidden_states).view(B, T, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        if attention_mask is not None:
+            scores = scores + attention_mask
+        attn_weights = F.softmax(scores, dim=-1)
+        context = torch.matmul(attn_weights, v)
+        context = context.transpose(1, 2).contiguous().view(B, T, self.all_head_size)
+        projected = self.dense(context)
+        return self.LayerNorm(self.dropout(projected) + hidden_states)
+
+
+class _AlbertLayer(nn.Module):
+    """Single ALBERT transformer layer.
+
+    Attribute names match HF: ``attention``, ``ffn``, ``ffn_output``,
+    ``full_layer_layer_norm`` so that state_dict keys align exactly.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.attention = _AlbertAttention(config)
+        self.ffn = nn.Linear(config.hidden_size, config.intermediate_size)
+        self.ffn_output = nn.Linear(config.intermediate_size, config.hidden_size)
+        self.full_layer_layer_norm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def forward(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        attention_output = self.attention(hidden_states, attention_mask)
+        ffn_out = F.gelu(self.ffn(attention_output))
+        ffn_out = self.ffn_output(ffn_out)
+        return self.full_layer_layer_norm(self.dropout(ffn_out) + attention_output)
+
+
+class _AlbertLayerGroup(nn.Module):
+    """Layer group containing one shared layer (matches HF nesting)."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.albert_layers = nn.ModuleList([_AlbertLayer(config)])
+
+
+class _AlbertEncoder(nn.Module):
+    """ALBERT encoder: optional embedding projection + shared layer groups.
+
+    Key names: ``embedding_hidden_mapping_in``, ``albert_layer_groups``.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        if config.embedding_size != config.hidden_size:
+            self.embedding_hidden_mapping_in = nn.Linear(config.embedding_size, config.hidden_size)
+        else:
+            self.embedding_hidden_mapping_in = None
+        self.albert_layer_groups = nn.ModuleList([_AlbertLayerGroup(config)])
+        self.num_hidden_layers = config.num_hidden_layers
+
+    def forward(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        if self.embedding_hidden_mapping_in is not None:
+            hidden_states = self.embedding_hidden_mapping_in(hidden_states)
+        layer = self.albert_layer_groups[0].albert_layers[0]
+        for _ in range(self.num_hidden_layers):
+            hidden_states = layer(hidden_states, attention_mask)
+        return hidden_states
+
+
+class AlbertConfig:
+    """Minimal ALBERT config matching HF's AlbertConfig fields used by Kokoro."""
+
+    def __init__(
+        self,
+        vocab_size: int = 30000,
+        hidden_size: int = 768,
+        num_attention_heads: int = 12,
+        intermediate_size: int = 2048,
+        max_position_embeddings: int = 512,
+        num_hidden_layers: int = 12,
+        embedding_size: int | None = None,
+        hidden_dropout_prob: float | None = None,
+        dropout: float = 0.1,
+        **kwargs,
+    ):
+        self.vocab_size = vocab_size
+        self.hidden_size = hidden_size
+        self.num_attention_heads = num_attention_heads
+        self.intermediate_size = intermediate_size
+        self.max_position_embeddings = max_position_embeddings
+        self.num_hidden_layers = num_hidden_layers
+        self.embedding_size = embedding_size if embedding_size is not None else 128
+        self.hidden_dropout_prob = hidden_dropout_prob if hidden_dropout_prob is not None else dropout
+
+
+class CustomAlbert(nn.Module):
+    """Standalone ALBERT encoder that returns ``last_hidden_state`` directly.
+
+    Module structure mirrors ``transformers.AlbertModel`` so that
+    checkpoint state_dict keys produced by HuggingFace load without
+    any key remapping.  Unused sub-modules (``pooler``) are omitted;
+    their keys are silently skipped during ``load_state_dict``.
+    """
+
+    def __init__(self, config: AlbertConfig):
+        super().__init__()
+        self.config = config
+        self.embeddings = _AlbertEmbeddings(config)
+        self.encoder = _AlbertEncoder(config)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        hidden_states = self.embeddings(input_ids)
+        # Expand attention_mask to [B, 1, 1, T] for broadcast with scores.
+        extended_mask = None
+        if attention_mask is not None:
+            extended_mask = (1.0 - attention_mask[:, None, None, :].float()) * torch.finfo(hidden_states.dtype).min
+        return self.encoder(hidden_states, extended_mask)
