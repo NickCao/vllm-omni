@@ -17,7 +17,6 @@ from typing import Any, Literal
 import numpy as np
 import torch
 import torch.nn as nn
-import whisper
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.schedulers.scheduling_utils import (
     KarrasDiffusionSchedulers,
@@ -38,6 +37,7 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+from vllm.multimodal.media.audio import load_audio as _load_audio_file
 
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.distributed.autoencoders.autoencoder_kl_wan import (
@@ -994,7 +994,7 @@ def _merge_overlapping_vae_features(audio_feats: list[torch.Tensor], overlap_rat
 
 def load_audio_and_encode(audio_vae, audio_path: str, seconds: int | None = None) -> torch.Tensor:
     """Load audio from file and encode to latent space using the Stable Audio VAE."""
-    audio_full = whisper.load_audio(audio_path, sr=_SAMPLE_RATE)
+    audio_full, _ = _load_audio_file(audio_path, sr=_SAMPLE_RATE)
     if seconds is not None:
         audio_full = audio_full[: min(int(seconds * _SAMPLE_RATE), audio_full.shape[0])]
     total_samples = audio_full.shape[0]
@@ -1010,7 +1010,11 @@ def load_audio_and_encode(audio_vae, audio_path: str, seconds: int | None = None
     latent_to_audio_ratio = None
     for offset_start in range(0, total_samples, step_size):
         offset_end = min(offset_start + window_size, total_samples)
-        chunk = whisper.pad_or_trim(audio_full[offset_start:offset_end], length=window_size)
+        chunk = audio_full[offset_start:offset_end]
+        if len(chunk) < window_size:
+            chunk = np.pad(chunk, (0, window_size - len(chunk)))
+        else:
+            chunk = chunk[:window_size]
         chunk_tensor = torch.from_numpy(chunk).cuda().unsqueeze(0).expand(2, -1)
         encoded_chunk = audio_vae.vae_model.encode(chunk_tensor)
 
