@@ -188,6 +188,11 @@ _DIFFUSION_MODELS = {
         "pipeline_omnivoice",
         "OmniVoicePipeline",
     ),
+    "KokoroPipeline": (
+        "kokoro",
+        "pipeline_kokoro",
+        "KokoroPipeline",
+    ),
 }
 
 
@@ -375,6 +380,7 @@ _DIFFUSION_POST_PROCESS_FUNCS = {
     "HunyuanVideo15ImageToVideoPipeline": "get_hunyuan_video_15_i2v_post_process_func",
     "MagiHumanPipeline": "get_magi_human_post_process_func",
     "OmniVoicePipeline": "get_omnivoice_post_process_func",
+    "KokoroPipeline": "get_kokoro_post_process_func",
 }
 
 _DIFFUSION_PRE_PROCESS_FUNCS = {
