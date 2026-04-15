@@ -105,6 +105,12 @@ class StageDiffusionProc:
                 od_config.update_multimodal_support()
             elif architectures and len(architectures) == 1:
                 od_config.model_class_name = architectures[0]
+            elif od_config.model_class_name is not None:
+                # model_class_name already set via stage config YAML
+                # (e.g. custom pipelines like Kokoro that have non-standard
+                # config.json without model_type/architectures fields).
+                od_config.tf_model_config = TransformerConfig()
+                od_config.update_multimodal_support()
             else:
                 raise
 
