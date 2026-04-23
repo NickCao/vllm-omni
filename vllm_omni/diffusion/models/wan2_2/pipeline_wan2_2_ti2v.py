@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import PIL.Image
@@ -35,7 +35,7 @@ from vllm_omni.diffusion.distributed.cfg_parallel import CFGParallelMixin
 from vllm_omni.diffusion.distributed.utils import get_local_device
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
 from vllm_omni.diffusion.model_loader.hub_prefetch import prefetch_subfolders
-from vllm_omni.diffusion.models.interface import SupportImageInput
+from vllm_omni.diffusion.models.interface import SupportImageInput, SupportsComponentDiscovery
 from vllm_omni.diffusion.models.progress_bar import ProgressBarMixin
 from vllm_omni.diffusion.models.wan2_2.pipeline_wan2_2 import (
     build_wan_scheduler,
@@ -139,7 +139,7 @@ def get_wan22_ti2v_pre_process_func(
     return pre_process_func
 
 
-class Wan22TI2VPipeline(nn.Module, SupportImageInput, CFGParallelMixin, ProgressBarMixin):
+class Wan22TI2VPipeline(nn.Module, SupportImageInput, CFGParallelMixin, ProgressBarMixin, SupportsComponentDiscovery):
     """
     Wan2.2 Text-Image-to-Video (TI2V) Pipeline.
 
@@ -150,6 +150,10 @@ class Wan22TI2VPipeline(nn.Module, SupportImageInput, CFGParallelMixin, Progress
     Uses expand_timesteps mode for I2V conditioning where the first frame
     is conditioned on the input image latent.
     """
+
+    _dit_modules: ClassVar[list[str]] = ["transformer"]
+    _encoder_modules: ClassVar[list[str]] = ["text_encoder"]
+    _vae_modules: ClassVar[list[str]] = ["vae"]
 
     def __init__(
         self,

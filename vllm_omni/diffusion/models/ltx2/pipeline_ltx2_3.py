@@ -20,7 +20,7 @@ import json
 import os
 from collections.abc import Iterable
 from contextlib import nullcontext
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import torch
@@ -39,6 +39,7 @@ from vllm.model_executor.models.utils import AutoWeightsLoader
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.distributed.utils import get_local_device
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
+from vllm_omni.diffusion.models.interface import SupportsComponentDiscovery
 from vllm_omni.diffusion.models.progress_bar import ProgressBarMixin
 from vllm_omni.diffusion.request import OmniDiffusionRequest
 
@@ -104,7 +105,7 @@ def get_ltx2_post_process_func(od_config: OmniDiffusionConfig):
     return post_process_func
 
 
-class LTX23Pipeline(nn.Module, ProgressBarMixin):
+class LTX23Pipeline(nn.Module, ProgressBarMixin, SupportsComponentDiscovery):
     """Fully independent LTX-2.3 pipeline.
 
     Key differences from LTX2Pipeline:
@@ -114,6 +115,10 @@ class LTX23Pipeline(nn.Module, ProgressBarMixin):
     - Transformer: passes sigma for prompt_adaln
     - CPU offloading: text encoder, connectors, VAE, vocoder stay on CPU
     """
+
+    _dit_modules: ClassVar[list[str]] = ["transformer"]
+    _encoder_modules: ClassVar[list[str]] = ["text_encoder"]
+    _vae_modules: ClassVar[list[str]] = ["vae", "audio_vae"]
 
     def __init__(
         self,

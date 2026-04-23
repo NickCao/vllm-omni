@@ -28,7 +28,7 @@ from vllm.model_executor.models.utils import AutoWeightsLoader
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.distributed.utils import get_local_device
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
-from vllm_omni.diffusion.models.interface import SupportAudioOutput
+from vllm_omni.diffusion.models.interface import SupportAudioOutput, SupportsComponentDiscovery
 from vllm_omni.diffusion.models.stable_audio.stable_audio_transformer import (
     StableAudioDiTModel,
     StableAudioSchedulerWrapper,
@@ -64,7 +64,7 @@ def get_stable_audio_post_process_func(
     return post_process_func
 
 
-class StableAudioPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMixin):
+class StableAudioPipeline(nn.Module, SupportAudioOutput, SupportsComponentDiscovery, DiffusionPipelineProfilerMixin):
     """
     Pipeline for text-to-audio generation using Stable Audio Open.
 
@@ -82,6 +82,10 @@ class StableAudioPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfil
     # contract introduced for AudioX in #2077).
     support_audio_output: ClassVar[bool] = True
     audio_sample_rate: ClassVar[int] = 44100
+
+    _dit_modules: ClassVar[list[str]] = ["transformer"]
+    _encoder_modules: ClassVar[list[str]] = ["text_encoder"]
+    _vae_modules: ClassVar[list[str]] = ["vae"]
 
     def __init__(
         self,

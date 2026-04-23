@@ -3,7 +3,7 @@
 
 import logging
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import torch
@@ -22,7 +22,7 @@ from vllm.transformers_utils.config import get_config
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.distributed.utils import get_local_device
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
-from vllm_omni.diffusion.models.interface import SupportImageInput
+from vllm_omni.diffusion.models.interface import SupportImageInput, SupportsComponentDiscovery
 from vllm_omni.diffusion.profiler.diffusion_pipeline_profiler import (
     DiffusionPipelineProfilerMixin,
 )
@@ -300,9 +300,14 @@ class HunyuanImage3Pipeline(
     HunyuanImage3PreTrainedModel,
     GenerationMixin,
     SupportImageInput,
+    SupportsComponentDiscovery,
     DiffusionPipelineProfilerMixin,
 ):
     support_image_input = True
+    _dit_modules: ClassVar[list[str]] = ["model"]
+    _encoder_modules: ClassVar[list[str]] = ["vision_model"]
+    _vae_modules: ClassVar[list[str]] = ["vae"]
+
     hf_to_vllm_mapper = WeightsMapper(
         orig_to_new_prefix={
             "model.": "",
