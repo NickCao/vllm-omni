@@ -33,6 +33,16 @@ def _get_diffusion_feature_cases(model: str):
             OmniServerParams(
                 model=model,
                 server_args=[
+                    "--enable-cpu-offload",
+                ],
+            ),
+            id="cpu_offload",
+            marks=SINGLE_CARD_FEATURE_MARKS,
+        ),
+        pytest.param(
+            OmniServerParams(
+                model=model,
+                server_args=[
                     "--cache-backend",
                     "tea_cache",  # [TODO] may consider changing to cache_dit after #1779 is resolved. Currently cache_dit and layerwise offload cannot work together.
                     "--enable-layerwise-offload",
