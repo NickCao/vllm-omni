@@ -32,7 +32,7 @@ from transformers import PreTrainedTokenizerBase, Qwen2Config, Qwen2Model, Stati
 from vllm.logger import init_logger
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
-from vllm_omni.model_executor.layers.timestep_embedding import SinusPositionEmbedding
+from vllm_omni.model_executor.layers.timestep_embedding import DiTTimestepEmbedding
 
 from .audio_vae import AudioVAE
 
@@ -232,19 +232,6 @@ class FinalLayer(nn.Module):
         return x
 
 
-class TimestepEmbedder(nn.Module):
-    def __init__(self, dim: int, freq_embed_dim: int = 256):
-        super().__init__()
-        self.time_embed = SinusPositionEmbedding(freq_embed_dim)
-        self.time_mlp = nn.Sequential(nn.Linear(freq_embed_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
-
-    def forward(self, timestep: torch.Tensor) -> torch.Tensor:
-        time_hidden = self.time_embed(timestep)
-        time_hidden = time_hidden.to(timestep.dtype)
-        time = self.time_mlp(time_hidden)
-        return time
-
-
 class CondEmbedder(nn.Module):
     """Embeds LLM hidden states with optional CFG dropout."""
 
@@ -274,7 +261,7 @@ class DiT(nn.Module):
         self.out_channels = in_channels
         self.num_heads = num_heads
 
-        self.t_embedder = TimestepEmbedder(hidden_size)
+        self.t_embedder = DiTTimestepEmbedding(hidden_size)
         self.x_embedder = nn.Linear(in_channels, hidden_size)
         self.c_embedder = CondEmbedder(llm_cond_dim, hidden_size)
         if "spk_dim" in kwargs:

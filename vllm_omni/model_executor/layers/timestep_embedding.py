@@ -1,9 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Shared sinusoidal position embedding for timestep conditioning.
+"""Shared timestep embedding primitives for diffusion models.
 
-Used by Qwen3-TTS, Qwen2.5-Omni, CosyVoice3, and Ming-Flash-Omni
-for diffusion timestep encoding in DiT/CFM architectures.
+- ``SinusPositionEmbedding``: sin/cos positional encoding (TTS DiT/CFM).
+  Used by Qwen3-TTS, Qwen2.5-Omni, CosyVoice3, Ming-Flash-Omni.
+- ``DiTTimestepEmbedding``: SinusPosEmb + Linear + SiLU + Linear MLP.
+  Used by the same models as above.
+- ``timestep_embedding()``: standalone function (GLIDE/DiT convention).
+  Used by Bagel, NextStep, Z-Image, HunyuanImage3.
 """
 
 from __future__ import annotations
@@ -18,7 +22,6 @@ def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 10000.0) -
     """Create sinusoidal timestep embeddings (GLIDE/DiT convention).
 
     Produces cos-then-sin embeddings with log-spaced frequencies.
-    Used by Bagel, NextStep, Z-Image, HunyuanImage3 diffusion transformers.
 
     Args:
         t: (N,) 1-D tensor of timestep indices (may be fractional).
@@ -69,3 +72,22 @@ class SinusPositionEmbedding(nn.Module):
         emb = scale * x.unsqueeze(1) * emb.unsqueeze(0)
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb.to(x.dtype)
+
+
+class DiTTimestepEmbedding(nn.Module):
+    """Timestep conditioning: SinusPositionEmbedding + Linear + SiLU + Linear.
+
+    Args:
+        dim: Hidden dimension (output size).
+        freq_embed_dim: Sinusoidal embedding dimension (input to MLP).
+    """
+
+    def __init__(self, dim: int, freq_embed_dim: int = 256) -> None:
+        super().__init__()
+        self.time_embed = SinusPositionEmbedding(freq_embed_dim)
+        self.time_mlp = nn.Sequential(nn.Linear(freq_embed_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
+
+    def forward(self, timestep: torch.Tensor) -> torch.Tensor:
+        time_hidden = self.time_embed(timestep)
+        time_hidden = time_hidden.to(timestep.dtype)
+        return self.time_mlp(time_hidden)

@@ -16,7 +16,7 @@ from vllm.logger import init_logger
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
 from vllm_omni.diffusion.attention.layer import Attention as DiffusionAttention
-from vllm_omni.model_executor.layers.timestep_embedding import SinusPositionEmbedding
+from vllm_omni.model_executor.layers.timestep_embedding import DiTTimestepEmbedding
 
 logger = init_logger(__name__)
 
@@ -278,21 +278,6 @@ class ConvNeXtV2Block(nn.Module):
         return residual + x
 
 
-class TimestepEmbedding(nn.Module):
-    """Timestep embedding with MLP."""
-
-    def __init__(self, dim, freq_embed_dim=256):
-        super().__init__()
-        self.time_embed = SinusPositionEmbedding(freq_embed_dim)
-        self.time_mlp = nn.Sequential(nn.Linear(freq_embed_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
-
-    def forward(self, timestep: torch.Tensor):
-        time_hidden = self.time_embed(timestep)
-        time_hidden = time_hidden.to(timestep.dtype)
-        time = self.time_mlp(time_hidden)
-        return time
-
-
 class TextEmbedding(nn.Module):
     """Text embedding with optional ConvNeXt modeling."""
 
@@ -378,7 +363,7 @@ class DiT(nn.Module):
     ):
         super().__init__()
 
-        self.time_embed = TimestepEmbedding(dim)
+        self.time_embed = DiTTimestepEmbedding(dim)
         if mu_dim is None:
             mu_dim = mel_dim
         self.input_embed = InputEmbedding(mel_dim, mu_dim, dim, spk_dim)

@@ -26,7 +26,7 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.utils import ModelOutput, auto_docstring, logging
 from transformers.utils.hub import cached_file
 
-from vllm_omni.model_executor.layers.timestep_embedding import SinusPositionEmbedding
+from vllm_omni.model_executor.layers.timestep_embedding import DiTTimestepEmbedding
 
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1Config,
@@ -626,20 +626,6 @@ class DiTAttention(nn.Module):
         attention_output = self.to_out[1](attention_output)
 
         return attention_output
-
-
-class DiTTimestepEmbedding(nn.Module):
-    def __init__(self, dim, freq_embed_dim=256):
-        super().__init__()
-        self.time_embed = SinusPositionEmbedding(freq_embed_dim)
-        self.time_mlp = nn.ModuleList([nn.Linear(freq_embed_dim, dim), nn.SiLU(), nn.Linear(dim, dim)])
-
-    def forward(self, timestep):
-        time_hidden = self.time_embed(timestep)
-        time_hidden = time_hidden.to(timestep.dtype)
-        for layer in self.time_mlp:
-            time_hidden = layer(time_hidden)  # b d
-        return time_hidden
 
 
 class DiTDecoderLayer(nn.Module):
