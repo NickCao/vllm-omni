@@ -14,6 +14,31 @@ import torch
 import torch.nn as nn
 
 
+def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 10000.0) -> torch.Tensor:
+    """Create sinusoidal timestep embeddings (GLIDE/DiT convention).
+
+    Produces cos-then-sin embeddings with log-spaced frequencies.
+    Used by Bagel, NextStep, Z-Image, HunyuanImage3 diffusion transformers.
+
+    Args:
+        t: (N,) 1-D tensor of timestep indices (may be fractional).
+        dim: Output embedding dimension.
+        max_period: Controls the minimum frequency.
+
+    Returns:
+        (N, dim) tensor of positional embeddings.
+    """
+    half = dim // 2
+    freqs = torch.exp(
+        -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=t.device) / half
+    )
+    args = t[:, None].float() * freqs[None]
+    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    if dim % 2:
+        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+    return embedding
+
+
 class SinusPositionEmbedding(nn.Module):
     """Sinusoidal position embedding for scalar timesteps.
 
