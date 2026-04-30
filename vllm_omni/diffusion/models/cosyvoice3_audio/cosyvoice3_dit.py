@@ -16,6 +16,7 @@ from vllm.logger import init_logger
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
 from vllm_omni.diffusion.attention.layer import Attention as DiffusionAttention
+from vllm_omni.model_executor.layers.timestep_embedding import SinusPositionEmbedding
 
 logger = init_logger(__name__)
 
@@ -275,23 +276,6 @@ class ConvNeXtV2Block(nn.Module):
         x = self.grn(x)
         x = self.pwconv2(x)
         return residual + x
-
-
-class SinusPositionEmbedding(nn.Module):
-    """Sinusoidal position embedding."""
-
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, x, scale=1000):
-        device = x.device
-        half_dim = self.dim // 2
-        emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=device).float() * -emb)
-        emb = scale * x.unsqueeze(1) * emb.unsqueeze(0)
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb
 
 
 class TimestepEmbedding(nn.Module):

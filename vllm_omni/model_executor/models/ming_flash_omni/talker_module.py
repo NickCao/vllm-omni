@@ -21,7 +21,6 @@
 # MAE: https://github.com/facebookresearch/mae/blob/main/models_mae.py
 # --------------------------------------------------------
 import logging
-import math
 from functools import cached_property
 from queue import Queue
 from threading import Lock
@@ -32,6 +31,8 @@ import torch.nn.functional as F
 from transformers import PreTrainedTokenizerBase, Qwen2Config, Qwen2Model, StaticCache
 from vllm.logger import init_logger
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
+
+from vllm_omni.model_executor.layers.timestep_embedding import SinusPositionEmbedding
 
 from .audio_vae import AudioVAE
 
@@ -229,21 +230,6 @@ class FinalLayer(nn.Module):
         x = self.norm_final(x)
         x = self.linear(x)
         return x
-
-
-class SinusPositionEmbedding(nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, x: torch.Tensor, scale: float = 1000) -> torch.Tensor:
-        device = x.device
-        half_dim = self.dim // 2
-        emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=device).float() * -emb)
-        emb = scale * x.unsqueeze(1) * emb.unsqueeze(0)
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb
 
 
 class TimestepEmbedder(nn.Module):

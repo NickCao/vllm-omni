@@ -26,6 +26,8 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.utils import ModelOutput, auto_docstring, logging
 from transformers.utils.hub import cached_file
 
+from vllm_omni.model_executor.layers.timestep_embedding import SinusPositionEmbedding
+
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1Config,
     Qwen3TTSTokenizerV1DecoderBigVGANConfig,
@@ -624,22 +626,6 @@ class DiTAttention(nn.Module):
         attention_output = self.to_out[1](attention_output)
 
         return attention_output
-
-
-# time step conditioning embedding
-class SinusPositionEmbedding(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, hidden_states, scale=1000):
-        device = hidden_states.device
-        half_dim = self.dim // 2
-        emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=device).float() * -emb)
-        emb = scale * hidden_states.unsqueeze(1) * emb.unsqueeze(0)
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb.type_as(hidden_states)
 
 
 class DiTTimestepEmbedding(nn.Module):
