@@ -210,11 +210,6 @@ class Qwen3TTSCode2Wav(nn.Module):
         Length management is done here instead of relying on HF's padding=-1
         sentinel logic.
         """
-        self._ensure_speech_tokenizer_loaded()
-        assert self._decoder is not None
-        assert self._num_quantizers is not None
-        assert self._total_upsample is not None
-
         decoder = self._decoder
         q = int(self._num_quantizers)
         upsample = int(self._total_upsample)
@@ -363,5 +358,8 @@ class Qwen3TTSCode2Wav(nn.Module):
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         # SpeechTokenizer weights live under `speech_tokenizer/` and are loaded
-        # lazily from that directory. Ignore main checkpoint weights.
+        # from that directory. Ignore main checkpoint weights.
+        for _ in weights:
+            pass
+        self._ensure_speech_tokenizer_loaded()
         return set()
