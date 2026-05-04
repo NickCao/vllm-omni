@@ -21,7 +21,7 @@ _HEADS = 2
 _HEAD_DIM = _DIM // _HEADS
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True, scope="module")
 def _init_distributed():
     """Initialize the minimal distributed environment required by
     vLLM parallel linear layers (tensor-parallel group must exist)."""
