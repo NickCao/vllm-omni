@@ -560,7 +560,7 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
         if hasattr(request, "cache_salt") and request.cache_salt is not None:
             engine_prompt["cache_salt"] = request.cache_salt
 
-        speaker = getattr(request, "speaker", None)
+        speaker = getattr(request, "voice", None) or getattr(request, "speaker", None)
         normalized = validate_requested_speaker(speaker, self._get_supported_speakers())
         if normalized is not None:
             if "additional_information" not in engine_prompt or engine_prompt["additional_information"] is None:
@@ -2424,6 +2424,8 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
             cfg_text_scale = extra_body.get("cfg_text_scale")
             cfg_img_scale = extra_body.get("cfg_img_scale")
             seed = extra_body.get("seed")
+            if seed is None:
+                seed = getattr(request, "seed", None)
             negative_prompt = extra_body.get("negative_prompt")
             num_outputs_per_prompt = extra_body.get("num_outputs_per_prompt", 1)
 
