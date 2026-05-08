@@ -598,26 +598,23 @@ class DiffusersPipelineLoader:
                 model = model_cls(od_config=od_config)
         self.load_weights(model)
 
-        # Collect all transformers to shard (some models have transformer_2 for MoE)
-        transformers_to_shard = []
-        transformer = getattr(model, "transformer", None)
-        if transformer is None:
-            raise ValueError("Model has no transformer attribute for HSDP")
-        transformers_to_shard.append(("transformer", transformer))
+        # Discover pipeline components (DiT, encoders, VAEs) via
+        # ModuleDiscovery, which consults SupportsComponentDiscovery
+        # when available and falls back to well-known attribute names.
+        # This supports nested pipelines (e.g. LTX2TwoStagesPipeline
+        # where the transformer lives at "pipe.transformer").
+        discovered_modules = ModuleDiscovery.discover(model)
 
-        # Check for transformer_2 (MoE two-stage models like Wan2.2-I2V)
-        transformer_2 = getattr(model, "transformer_2", None)
-        if transformer_2 is not None:
-            transformers_to_shard.append(("transformer_2", transformer_2))
+        if not discovered_modules.dits:
+            raise ValueError("No DiT modules discovered for HSDP sharding")
 
-        # Apply HSDP sharding to all transformers
-        for name, trans in transformers_to_shard:
+        # Apply HSDP sharding to all discovered DiT transformers
+        for name, trans in zip(discovered_modules.dit_names, discovered_modules.dits):
             logger.debug("Applying HSDP to %s", name)
             apply_hsdp_to_model(trans, hsdp_config)
 
-        # # HSDP only shards transformer modules. All other runtime modules must
-        # # be placed on the execution device explicitly after sharding.
-        discovered_modules = ModuleDiscovery.discover(model)
+        # HSDP only shards transformer modules. All other runtime modules must
+        # be placed on the execution device explicitly after sharding.
         modules_to_move: list[nn.Module] = []
         if discovered_modules.vaes is not None:
             modules_to_move.extend(discovered_modules.vaes)
