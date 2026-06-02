@@ -121,9 +121,6 @@ def parse_args():
         help="Temperature for text generation sampling (default: 0.3).",
     )
 
-    from vllm_omni.engine.arg_utils import nullify_stage_engine_defaults
-
-    nullify_stage_engine_defaults(parser)
     args = parser.parse_args()
     return args
 
@@ -153,7 +150,8 @@ def main():
 
     from vllm_omni.entrypoints.omni import Omni
 
-    omni_kwargs = {}
+    omni_kwargs = vars(args).copy()
+    omni_kwargs.pop("model", None)
     deploy_config = args.deploy_config
     if args.think and deploy_config is None:
         deploy_config = "vllm_omni/deploy/bagel_think.yaml"
@@ -161,22 +159,10 @@ def main():
     if deploy_config:
         omni_kwargs["deploy_config"] = deploy_config
 
-    omni_kwargs.update(
-        {
-            "log_stats": args.log_stats,
-            "init_sleep_seconds": args.init_sleep_seconds,
-            "batch_timeout": args.batch_timeout,
-            "init_timeout": args.init_timeout,
-            "shm_threshold_bytes": args.shm_threshold_bytes,
-            "worker_backend": args.worker_backend,
-            "ray_address": args.ray_address,
-            "enable_diffusion_pipeline_profiler": args.enable_diffusion_pipeline_profiler,
-        }
-    )
     if args.quantization:
         omni_kwargs["quantization_config"] = args.quantization
 
-    omni = Omni.from_cli_args(args, model=model_name, **omni_kwargs)
+    omni = Omni(model=model_name, **omni_kwargs)
 
     formatted_prompts = []
     for p in prompts:

@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from dataclasses import replace
 from functools import cached_property
 from pathlib import Path
 
@@ -144,6 +145,9 @@ class VoxtralTTSForConditionalGeneration(
         elif self.model_stage == "audio_tokenizer":
             self.requires_raw_input_tokens = True
             self.audio_generation = None
+            if vllm_config.quant_config is not None:
+                vllm_config = replace(vllm_config, quant_config=None)
+                logger.info("Voxtral TTS FP8 routing: stage-1 audio_tokenizer=bf16")
             self.audio_tokenizer = init_vllm_registered_model(
                 vllm_config=vllm_config,
                 hf_config=config,
@@ -155,6 +159,13 @@ class VoxtralTTSForConditionalGeneration(
             raise ValueError("Invalid model stage")
 
     # -------------------- CUDA Graph for acoustic transformer --------------------
+
+    def get_language_model(self) -> "nn.Module":
+        """Return the language model for upstream MoE detection."""
+        if hasattr(self.model, "get_language_model"):
+            return self.model.get_language_model()
+        return self.model
+
     def _enable_acoustic_transformer_cudagraph(self):
         """Initialize and capture CUDA graphs for compute_mm_logits."""
         if self.model_stage != "audio_generation" or not hasattr(self, "_vllm_config"):

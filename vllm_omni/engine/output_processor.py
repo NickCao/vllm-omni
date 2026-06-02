@@ -1,6 +1,5 @@
 from typing import Any
 
-import numpy as np
 import torch
 from vllm.logger import init_logger
 from vllm.outputs import PoolingRequestOutput
@@ -169,7 +168,6 @@ class OmniRequestState(RequestState):
         finish_reason: FinishReason | None,
         stop_reason: int | str | None,
         kv_transfer_params: dict[str, Any] | None = None,
-        routed_experts: np.ndarray | None = None,
     ) -> OmniRequestOutput | PoolingRequestOutput | None:
         """Create a request output from generation results.
 
@@ -196,7 +194,6 @@ class OmniRequestState(RequestState):
                 finish_reason,
                 stop_reason,
                 kv_transfer_params,
-                routed_experts,
             )
 
         finished = finish_reason is not None
@@ -230,7 +227,8 @@ class OmniRequestState(RequestState):
                 self.sent_tokens_offset = self.detokenizer.num_output_tokens()
 
         external_req_id = self.external_req_id
-        output = self._new_completion_output(new_token_ids, finish_reason, stop_reason, routed_experts)
+
+        output = self._new_completion_output(new_token_ids, finish_reason, stop_reason)
 
         if self.parent_req is None:
             outputs = [output]
@@ -240,17 +238,23 @@ class OmniRequestState(RequestState):
                 return None
             external_req_id = self.parent_req.external_req_id
 
-        return self._new_request_output(external_req_id, outputs, finished, kv_transfer_params)
+        return self._new_request_output(
+            external_req_id,
+            outputs,
+            finished,
+            kv_transfer_params,
+        )
 
     def _new_completion_output(
         self,
         token_ids: list[int],
         finish_reason: FinishReason | None,
         stop_reason: int | str | None,
-        routed_experts: np.ndarray | None = None,
     ) -> Any:
         # Reuse base text/logprobs logic, then annotate with pooling_result.
-        base_output = super()._new_completion_output(token_ids, finish_reason, stop_reason, routed_experts)
+        # Note: upstream _new_completion_output no longer accepts routed_experts
+        # as a parameter; it reads from ``self.routed_experts_chunks`` internally.
+        base_output = super()._new_completion_output(token_ids, finish_reason, stop_reason)
 
         # Inter-stage processors need the full cumulative token sequence.
         # In DELTA mode, base_output.token_ids only has the latest step's
@@ -358,6 +362,24 @@ class MultimodalOutputProcessor(VLLMOutputProcessor):
         if parent_req:
             self.parent_requests[parent_req.request_id] = parent_req
         self.external_req_ids[req_state.external_req_id].append(request_id)
+
+    def remove_request(self, request_id: str) -> None:
+        """Rollback one previously registered request if it was never submitted."""
+        req_state = self.request_states.pop(request_id, None)
+        if req_state is None:
+            return
+
+        external_req_id = getattr(req_state, "external_req_id", None)
+        if external_req_id is not None:
+            request_ids = self.external_req_ids.get(external_req_id)
+            if request_ids is not None:
+                self.external_req_ids[external_req_id] = [rid for rid in request_ids if rid != request_id]
+                if not self.external_req_ids[external_req_id]:
+                    self.external_req_ids.pop(external_req_id, None)
+
+        parent_req = getattr(req_state, "parent_req", None)
+        if parent_req is not None:
+            self.parent_requests.pop(parent_req.request_id, None)
 
     def process_outputs(
         self,

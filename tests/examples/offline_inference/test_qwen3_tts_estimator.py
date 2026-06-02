@@ -2,7 +2,7 @@
 Offline inference regression tests: Qwen3-TTS _estimate_prompt_len.
 
 Covers the four ref_audio input forms handled by the estimator in
-examples/offline_inference/qwen3_tts/end2end.py:
+examples/offline_inference/text_to_speech/qwen3_tts/end2end.py:
   - bare local path
   - file:// URI
   - http:// URL
@@ -20,7 +20,9 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-_examples_dir = str(Path(__file__).parent.parent.parent.parent / "examples" / "offline_inference" / "qwen3_tts")
+_examples_dir = str(
+    Path(__file__).parent.parent.parent.parent / "examples" / "offline_inference" / "text_to_speech" / "qwen3_tts"
+)
 sys.path.insert(0, _examples_dir)
 from end2end import _estimate_prompt_len  # noqa: E402
 
@@ -55,11 +57,11 @@ def wav_file(tmp_path: Path) -> Path:
 def estimator_cache(monkeypatch):
     """
     Bypass model loading by pre-populating the estimator cache, and shortcut
-    Qwen3TTSTalker.estimate_prompt_len_from_additional_information so that
-    the test directly observes the real _estimate_ref_code_len closure.
+    Qwen3TTSPromptEmbedsBuilder.estimate_prompt_len_from_additional_information
+    so that the test directly observes the real _estimate_ref_code_len closure.
     """
-    from vllm_omni.model_executor.models.qwen3_tts.qwen3_tts_talker import (
-        Qwen3TTSTalkerForConditionalGeneration,
+    from vllm_omni.model_executor.models.qwen3_tts.prompt_embeds_builder import (
+        Qwen3TTSPromptEmbedsBuilder,
     )
 
     def _shortcut(**kwargs):
@@ -67,7 +69,7 @@ def estimator_cache(monkeypatch):
         return kwargs["estimate_ref_code_len"](ref_audio)
 
     monkeypatch.setattr(
-        Qwen3TTSTalkerForConditionalGeneration,
+        Qwen3TTSPromptEmbedsBuilder,
         "estimate_prompt_len_from_additional_information",
         staticmethod(_shortcut),
     )

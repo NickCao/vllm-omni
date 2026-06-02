@@ -27,12 +27,12 @@ from vllm.transformers_utils.configs.bagel import BagelConfig
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.distributed.utils import get_local_device
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
-from vllm_omni.diffusion.models.interface import SupportsModuleOffload
+from vllm_omni.diffusion.models.interface import SupportsComponentDiscovery
 from vllm_omni.diffusion.profiler.diffusion_pipeline_profiler import DiffusionPipelineProfilerMixin
 from vllm_omni.diffusion.request import OmniDiffusionRequest
 from vllm_omni.model_executor.model_loader.weight_utils import download_weights_from_hf_specific
 
-from .autoencoder import AutoEncoder, AutoEncoderParams
+from .autoencoder import AutoEncoder, AutoEncoderParams, DistributedAutoEncoder
 from .bagel_transformer import Bagel, NaiveCache, Qwen2MoTConfig, Qwen2MoTForCausalLM
 
 logger = init_logger(__name__)
@@ -150,7 +150,7 @@ class SiglipNaViTWrapper(nn.Module):
         return outputs.last_hidden_state.squeeze(0)
 
 
-class BagelPipeline(nn.Module, SupportsModuleOffload, DiffusionPipelineProfilerMixin):
+class BagelPipeline(nn.Module, SupportsComponentDiscovery, DiffusionPipelineProfilerMixin):
     """Bagel generation pipeline (MoT) packaged for vllm-omni diffusion engine.
 
     This pipeline is self-contained and uses the ported Bagel core files.
@@ -251,8 +251,9 @@ class BagelPipeline(nn.Module, SupportsModuleOffload, DiffusionPipelineProfilerM
         self.language_model = Qwen2MoTForCausalLM(
             llm_config, parallel_config=parallel_config, quant_config=quant_config, prefix="bagel.language_model"
         )
+        self.transformer = self.language_model.model
         ae_params: AutoEncoderParams = default_ae_params()
-        self.vae = AutoEncoder(ae_params)
+        self.vae = DistributedAutoEncoder(ae_params)
 
         self.bagel = Bagel(
             language_model=self.language_model,
@@ -284,11 +285,15 @@ class BagelPipeline(nn.Module, SupportsModuleOffload, DiffusionPipelineProfilerM
             )
         ]
 
-        # When quantization is enabled, vLLM linear layers live on meta
-        # device until the weight loader materializes them. Calling
-        # .to(device) would fail on those meta tensors, so we skip it
-        # entirely and let the weight loader handle device placement.
-        if quant_config is None and not od_config.enable_layerwise_offload:
+        # Defer device placement to the weight-loading/offload path in three cases:
+        # 1. Quantization: When quantization is enabled, vLLM linear layers live on meta
+        #    device until the weight loader materializes them. Calling .to(device) would fail on those meta tensors,
+        #    so we skip it entirely and let the weight loader handle device placement.
+        # 2. Layerwise offload: modules should be initialized on CPU first, then
+        #    selectively materialized/moved by the offloader.
+        # 3. HSDP: weights should be loaded on CPU first and sharded afterwards,
+        #    rather than eagerly placing the full model on one GPU.
+        if quant_config is None and not (od_config.enable_layerwise_offload or od_config.parallel_config.use_hsdp):
             self.to(self.device)
         self.setup_diffusion_pipeline_profiler(
             enable_diffusion_pipeline_profiler=self.od_config.enable_diffusion_pipeline_profiler
@@ -313,6 +318,27 @@ class BagelPipeline(nn.Module, SupportsModuleOffload, DiffusionPipelineProfilerM
         image = vae.decode(latent)
         image = (image * 0.5 + 0.5).clamp(0, 1)[0].permute(1, 2, 0) * 255
         return Image.fromarray(image.to(torch.uint8).cpu().numpy())
+
+    def _regen_init_noise_on_device(self, gen_input: dict, seed: int | None) -> None:
+        """Resample ``gen_input["packed_init_noises"]`` on-device with a fresh
+        per-call ``torch.Generator``.
+
+        ``Bagel.prepare_input`` (and the Lance video equivalent) call
+        ``torch.randn`` with no device or generator, falling back to CPU+fp32
+        via the global RNG.  Upstream Lance samples directly on CUDA+bf16 via
+        ``torch.Generator(device=cuda).manual_seed(seed)`` (lance.py:1536),
+        so for the same seed the two sides land on different noise streams.
+        Mutates ``gen_input`` in place; no-op if seed is unset or device is CPU.
+        """
+        if seed is None or self.device.type != "cuda":
+            return
+        ref = gen_input["packed_init_noises"]
+        gen_input["packed_init_noises"] = torch.randn(
+            ref.shape,
+            generator=torch.Generator(device=self.device).manual_seed(int(seed)),
+            device=self.device,
+            dtype=self.od_config.dtype,
+        )
 
     @torch.inference_mode()
     def forward(self, req: OmniDiffusionRequest) -> DiffusionOutput:
@@ -350,7 +376,7 @@ class BagelPipeline(nn.Module, SupportsModuleOffload, DiffusionPipelineProfilerM
 
         gen_params = BagelGenParams(
             num_timesteps=int(req.sampling_params.num_inference_steps or 50),
-            timestep_shift=3.0,
+            timestep_shift=float(extra_args.get("timestep_shift", 3.0)),
             cfg_text_scale=cfg_text_scale,
             cfg_img_scale=cfg_img_scale,
             cfg_interval=cfg_interval,
@@ -751,6 +777,8 @@ class BagelPipeline(nn.Module, SupportsModuleOffload, DiffusionPipelineProfilerM
             if torch.is_tensor(v):
                 generation_input[k] = v.to(self.device)
 
+        self._regen_init_noise_on_device(generation_input, req.sampling_params.seed)
+
         # text cfg
         generation_input_cfg_text = self.bagel.prepare_vae_latent_cfg(
             curr_kvlens=cfg_text_context["kv_lens"],
@@ -788,13 +816,7 @@ class BagelPipeline(nn.Module, SupportsModuleOffload, DiffusionPipelineProfilerM
                 cfg_renorm_type=gen_params.cfg_renorm_type,
                 **generation_input,
                 cfg_text_packed_position_ids=generation_input_cfg_text["cfg_packed_position_ids"],
-                cfg_text_packed_query_indexes=generation_input_cfg_text["cfg_packed_query_indexes"],
-                cfg_text_key_values_lens=generation_input_cfg_text["cfg_key_values_lens"],
-                cfg_text_packed_key_value_indexes=generation_input_cfg_text["cfg_packed_key_value_indexes"],
                 cfg_img_packed_position_ids=generation_input_cfg_img["cfg_packed_position_ids"],
-                cfg_img_packed_query_indexes=generation_input_cfg_img["cfg_packed_query_indexes"],
-                cfg_img_key_values_lens=generation_input_cfg_img["cfg_key_values_lens"],
-                cfg_img_packed_key_value_indexes=generation_input_cfg_img["cfg_packed_key_value_indexes"],
                 return_trajectory_latents=req.sampling_params.return_trajectory_latents,
                 scheduler=self.scheduler,
                 scheduler_kwargs=self.scheduler_kwargs,
@@ -821,6 +843,11 @@ class BagelPipeline(nn.Module, SupportsModuleOffload, DiffusionPipelineProfilerM
         custom = {}
         if think_text is not None:
             custom["think_text"] = think_text
+        # Mirror the PIL image into ``custom_output`` so callers reading via
+        # the orchestrator IPC boundary (which strips the bare ``output``
+        # field) can still recover the result.  ``video_frames`` already
+        # uses this pattern.
+        custom["image"] = img
 
         return DiffusionOutput(
             output=img,

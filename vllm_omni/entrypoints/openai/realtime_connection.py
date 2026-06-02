@@ -9,8 +9,8 @@ from uuid import uuid4
 
 import numpy as np
 from vllm.entrypoints.openai.engine.protocol import UsageInfo
-from vllm.entrypoints.openai.realtime.connection import RealtimeConnection as VllmRealtimeConnection
-from vllm.entrypoints.openai.realtime.protocol import TranscriptionDelta, TranscriptionDone
+from vllm.entrypoints.speech_to_text.realtime.connection import RealtimeConnection as VllmRealtimeConnection
+from vllm.entrypoints.speech_to_text.realtime.protocol import TranscriptionDelta, TranscriptionDone
 from vllm.logger import init_logger
 
 from vllm_omni.entrypoints.async_omni import AsyncOmni
@@ -138,28 +138,26 @@ class RealtimeConnection(VllmRealtimeConnection):
             )
 
             async for output in result_gen:
-                # Handle delta texts; this is very similar to the client from vLLM
-                if output.outputs and len(output.outputs) > 0:
+                stage_id = getattr(output, "stage_id", None)
+                if stage_id == 0 and output.outputs:
                     first_output = output.outputs[0]
                     new_token_ids = list(first_output.token_ids)
-                    new_tokens_len = len(new_token_ids)
-
-                    if not prompt_token_ids_len and output.prompt_token_ids:
-                        prompt_token_ids_len = len(output.prompt_token_ids)
-
-                    if new_tokens_len:
+                    if new_token_ids:
                         input_stream.put_nowait(new_token_ids)
+
+                    if output.prompt_token_ids:
+                        prompt_token_ids_len = max(
+                            prompt_token_ids_len,
+                            len(output.prompt_token_ids),
+                        )
 
                     delta_text = first_output.text or ""
                     full_text += delta_text
+                    completion_tokens_len += len(new_token_ids)
 
-                    # append output to input if there was any delta text
                     if delta_text:
                         await self.send(TranscriptionDelta(delta=delta_text))
 
-                    completion_tokens_len += new_tokens_len
-
-                # Handle audio chunking; this is Omni specific
                 audio_chunks, sample_rate = self._extract_audio_chunks(output)
 
                 for chunk in audio_chunks:
