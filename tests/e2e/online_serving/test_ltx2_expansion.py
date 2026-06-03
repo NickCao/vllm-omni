@@ -77,7 +77,7 @@ def test_ltx2_two_stage_hsdp(
     form_data = {
         "prompt": PROMPT,
         "model": omni_server.model,
-        "num_frames": 8,
+        "num_frames": 9,
         "fps": 8,
         "num_inference_steps": 2,
         "guidance_scale": 1.0,
