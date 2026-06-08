@@ -64,6 +64,7 @@ def _make_model(codec=None):
     model._num_codebooks = _NUM_CODEBOOKS
     model._output_sample_rate = _SAMPLE_RATE
     model._logged_codec_stats = True  # suppress one-shot log
+    model._codec_decode_takes_lengths = True
     return model
 
 

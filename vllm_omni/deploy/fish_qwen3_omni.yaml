@@ -1,5 +1,8 @@
 # Fish Speech S2 Pro deploy: async-chunk streaming slow_ar → dac_decoder.
 # Verified on 1× H20.
+# L4 (24 GB): stage 0 at 0.8 + stage 1 at 0.1 = 0.9 total. Stage 1 (DAC
+# decoder) has no KV cache; batching to max_num_seqs=4 adds negligible
+# overhead beyond the fixed codec weights (~200 MB).
 # Registry key and filename use the HF ``model_type=fish_qwen3_omni`` for
 # auto-detection; human-readable "fish_speech" stays as the source directory.
 async_chunk: true
