@@ -9,6 +9,7 @@ from vllm_omni.data_entry_keys import (
     MetaStruct,
     OmniPayload,
     OmniPayloadStruct,
+    unflatten_payload,
 )
 from vllm_omni.inputs.data import OmniTokensPrompt
 from vllm_omni.model_executor.models.mimo_audio.config_mimo_audio import TALKER_CODEC_PAD_TOKEN_ID
@@ -139,7 +140,7 @@ def llm2code2wav_async_chunk(
     transfer_manager: Any,
     multimodal_output: OmniPayload | dict[str, Any],
     request: Any,
-    is_finished: bool = False,
+    is_finished: bool = True,
 ) -> OmniPayloadStruct | None:
     """
     Async chunk version: convert stage-0 multimodal_output to code2wav payload (pooling / connector accumulation).
@@ -156,7 +157,7 @@ def llm2code2wav_async_chunk(
             cfg = raw_cfg.get("extra", raw_cfg) if isinstance(raw_cfg, dict) else {}
             chunk_size = int(cfg.get("codec_chunk_frames", 3))
             left_context_size = int(cfg.get("codec_left_context_frames", 3))
-            request_id = getattr(request, "external_req_id", None)
+            request_id = getattr(request, "external_req_id", None) or getattr(request, "req_id", None)
             return _flush_remaining_codes(transfer_manager, request_id, chunk_size, left_context_size)
         return None
     connector = getattr(transfer_manager, "connector", None)
@@ -183,11 +184,17 @@ def llm2code2wav_async_chunk(
         )
         left_context_size = _DEFAULT_CODEC_LEFT_CONTEXT_FRAMES
 
-    request_id = getattr(request, "external_req_id", None)
+    request_id = getattr(request, "external_req_id", None) or getattr(request, "req_id", None)
 
     # Text-only paths (e.g. modalities=["text"]) yield no codec pooling output;
     # stage-0 still drives the chunk transfer adapter, so treat None as "no codes
-    # this step" rather than letting `.get()` raise AttributeError.
+    # this step" rather than letting `.get()` raise AttributeError — an unhandled
+    # error here drops the chunk, starves stage-1 of the finished payload, and
+    # the stage subprocesses die before the final token is emitted.
+    # full_payload accumulator flattens {"codes": {"audio": ...}} to {"codes.audio": ...};
+    # unflatten so this function works with both transport modes.
+    if isinstance(multimodal_output, dict):
+        multimodal_output = unflatten_payload(multimodal_output)
     po_codes = multimodal_output.get("codes", {}) if multimodal_output is not None else {}
     if "audio" not in po_codes:
         if is_finished:
@@ -385,62 +392,3 @@ def llm2code2wav_token_only(
             )
         )
     return code2wav_inputs
-
-
-def llm2code2wav_full_payload(
-    transfer_manager,
-    pooling_output: dict,
-    request,
-) -> dict | None:
-    """Producer-side payload builder for the worker connector data plane.
-
-    AR runner's ``flatten_payload`` converts the per-step model emit
-    ``{"codes": {"audio": ...}}`` to ``pooling_output["codes.audio"]``.
-    The accumulator CONCATs per-step tensors along dim 0, so by flush
-    time this holds the full ``[total_steps, 1, 8, 4]`` codec tensor.
-
-    A back-compat fallback to nested ``pooling_output["codes"]["audio"]``
-    is kept in case a future runtime path bypasses `flatten_payload`.
-    """
-    del transfer_manager
-    rid = getattr(request, "request_id", "?")
-    if not isinstance(pooling_output, dict):
-        logger.warning(
-            "mimo_audio.llm2code2wav_full_payload: pooling_output not a dict "
-            "(type=%s) for req=%s; consumer wait gate may hang.",
-            type(pooling_output).__name__,
-            rid,
-        )
-        return None
-    codec_codes = pooling_output.get("codes.audio")
-    if codec_codes is None:
-        # Back-compat fallback for un-flattened pooler emits.
-        codes = pooling_output.get("codes")
-        if isinstance(codes, dict):
-            codec_codes = codes.get("audio")
-    if not isinstance(codec_codes, torch.Tensor) or codec_codes.numel() == 0:
-        logger.warning(
-            "mimo_audio.llm2code2wav_full_payload: missing/empty codes.audio "
-            "(keys=%s) for req=%s; consumer wait gate may hang.",
-            list(pooling_output.keys()),
-            rid,
-        )
-        return None
-    codec_codes = codec_codes.to(torch.long)
-    codec_codes = _filter_zero_codec_rows(codec_codes)
-    if codec_codes.numel() == 0:
-        logger.warning(
-            "mimo_audio.llm2code2wav_full_payload: codec_codes empty after _filter_zero_codec_rows for req=%s.",
-            rid,
-        )
-        return None
-
-    pad_vec = torch.tensor([TALKER_CODEC_PAD_TOKEN_ID] * 4)
-    code_final = prepend_and_flatten_colmajor(codec_codes, pad_vec).tolist()
-    if len(code_final) > MAX_CODE2WAV_TOKENS:
-        code_final = code_final[:MAX_CODE2WAV_TOKENS]
-
-    return {
-        "codes": {"audio": code_final},
-        "meta": {"finished": torch.tensor(True, dtype=torch.bool)},
-    }
