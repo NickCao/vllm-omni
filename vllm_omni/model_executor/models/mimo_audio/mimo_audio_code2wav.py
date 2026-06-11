@@ -713,8 +713,8 @@ class MiMoAudioToken2WavForConditionalGenerationVLLM(nn.Module, SupportsPP):
     def _batch_chunked_decode_streaming(
         self,
         request_codes_list: list[torch.Tensor],
-        default_chunk_size: int,
-        default_left_context_size: int,
+        default_chunk_size: int = _DEFAULT_CODEC_CHUNK_FRAMES,
+        default_left_context_size: int = _DEFAULT_CODEC_LEFT_CONTEXT_FRAMES,
         *,
         per_req_left_context_frames: list[int | None] | None = None,
         per_req_codec_chunk_frames: list[int | None] | None = None,
