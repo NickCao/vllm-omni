@@ -392,3 +392,22 @@ def llm2code2wav_token_only(
             )
         )
     return code2wav_inputs
+
+
+def llm2code2wav_full_payload(
+    transfer_manager: Any,
+    pooling_output: dict,
+    request: Any,
+    is_finished: bool = True,
+) -> OmniPayloadStruct | None:
+    """Non-async-chunk entry point, delegates to llm2code2wav_async_chunk.
+
+    The full-payload mixin passes ``pooling_output=`` while the async-chunk
+    adapter passes ``multimodal_output=``; this wrapper bridges the two.
+    """
+    return llm2code2wav_async_chunk(
+        transfer_manager=transfer_manager,
+        multimodal_output=pooling_output,
+        request=request,
+        is_finished=is_finished,
+    )
