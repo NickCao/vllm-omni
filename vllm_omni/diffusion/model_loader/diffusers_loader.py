@@ -35,6 +35,7 @@ from vllm_omni.diffusion.model_loader.checkpoint_adapters import (
     get_checkpoint_adapter,
 )
 from vllm_omni.diffusion.models.diffusers_adapter.pipeline_diffusers_adapter import DiffusersAdapterPipeline
+from vllm_omni.diffusion.models.interface import SupportsComponentDiscovery
 from vllm_omni.diffusion.offloader.module_collector import ModuleDiscovery
 from vllm_omni.diffusion.registry import initialize_model
 
@@ -695,6 +696,11 @@ class DiffusersPipelineLoader:
 
         # HSDP only shards transformer modules. All other runtime modules must
         # be placed on the execution device explicitly after sharding.
+        if not isinstance(model, SupportsComponentDiscovery):
+            raise TypeError(
+                f"{type(model).__name__} does not implement "
+                "SupportsComponentDiscovery, required for HSDP device placement."
+            )
         modules_to_move: list[nn.Module] = []
         if discovered_modules.vaes is not None:
             modules_to_move.extend(discovered_modules.vaes)
