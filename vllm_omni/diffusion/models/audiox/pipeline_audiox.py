@@ -25,7 +25,7 @@ from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.distributed.utils import get_local_device
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
 from vllm_omni.diffusion.models.audiox.audiox_transformer import MMDiffusionTransformer
-from vllm_omni.diffusion.models.interface import SupportAudioOutput
+from vllm_omni.diffusion.models.interface import SupportAudioOutput, SupportsComponentDiscovery
 from vllm_omni.diffusion.profiler.diffusion_pipeline_profiler import DiffusionPipelineProfilerMixin
 from vllm_omni.diffusion.worker.request_batch import DiffusionRequestBatch
 from vllm_omni.transformers_utils.processors import audiox as _audiox_transforms
@@ -367,11 +367,23 @@ class _BrownianTreeNoiseSampler:
         return -self._tree(t0, t1) / (t1 - t0).sqrt()
 
 
-class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMixin):
+class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMixin, SupportsComponentDiscovery):
     supports_request_batch = False
     support_audio_output: ClassVar[bool] = True
     audio_sample_rate: ClassVar[int] = 44100
     audio_channels: ClassVar[int] = 2
+
+    _dit_modules: ClassVar[list[str]] = ["model"]
+    _encoder_modules: ClassVar[list[str]] = ["text_encoder", "clip_encoder"]
+    _vae_modules: ClassVar[list[str]] = ["pretransform"]
+    _resident_modules: ClassVar[list[str]] = [
+        "audio_vae_adapter",
+        "maf_block",
+        "clip_proj",
+        "clip_proj_sync",
+        "clip_temp_transformer",
+    ]
+
     _PROFILER_TARGETS: ClassVar[list[str]] = ["diffuse"]
     _CLIP_SYNC_DURATION_SEC: ClassVar[float] = 10.0
     _VIDEO_SYNC_FRAME_COUNT: ClassVar[int] = 240
