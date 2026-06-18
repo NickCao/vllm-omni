@@ -382,6 +382,7 @@ class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMix
         "clip_proj",
         "clip_proj_sync",
         "clip_temp_transformer",
+        "clip_video_params",
     ]
 
     _PROFILER_TARGETS: ClassVar[list[str]] = ["diffuse"]
@@ -437,10 +438,17 @@ class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMix
         self._clip_out_features = 128
         self.clip_proj = nn.Linear(_in_features, self._clip_out_features)
         self.clip_proj_sync = nn.Linear(240, self._clip_out_features)
-        self.clip_sync_weight = nn.Parameter(torch.tensor(0.0))
         self.clip_temp_transformer = SA_Transformer(_DIM, depth=4, heads=16, dim_head=64, mlp_dim=_DIM * 4)
-        self.clip_temp_pos_embedding = nn.Parameter(torch.randn(1, _VIDEO_FPS * _DURATION_SEC, _DIM))
-        self.clip_empty_visual_feat = nn.Parameter(torch.zeros(1, self._clip_out_features, _DIM), requires_grad=False)
+        self.clip_video_params = nn.ParameterDict(
+            {
+                "sync_weight": nn.Parameter(torch.tensor(0.0)),
+                "temp_pos_embedding": nn.Parameter(torch.randn(1, _VIDEO_FPS * _DURATION_SEC, _DIM)),
+                "empty_visual_feat": nn.Parameter(
+                    torch.zeros(1, self._clip_out_features, _DIM),
+                    requires_grad=False,
+                ),
+            }
+        )
         _CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
         _CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
         self._clip_normalize = transforms.Compose([transforms.Normalize(mean=list(_CLIP_MEAN), std=list(_CLIP_STD))])
@@ -507,10 +515,17 @@ class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMix
             assert out == n_slots * total_heads * head_dim
             return tensor.view(total_heads, head_dim, n_slots).permute(2, 0, 1).reshape(out).contiguous()
 
+        _clip_param_remap = {
+            "clip_sync_weight": "clip_video_params.sync_weight",
+            "clip_temp_pos_embedding": "clip_video_params.temp_pos_embedding",
+            "clip_empty_visual_feat": "clip_video_params.empty_visual_feat",
+        }
+
         def _remap(items):
             for name, tensor in items:
                 if name.startswith(_legacy_prefix):
                     name = "audio_vae_adapter." + name[len(_legacy_prefix) :]
+                name = _clip_param_remap.get(name, name)
                 if qkv_mid in name and (name.endswith(".weight") or name.endswith(".bias")):
                     tensor = _restack_interleaved(tensor, 3)
                 elif to_kv_mid in name and (name.endswith(".weight") or name.endswith(".bias")):
@@ -742,11 +757,12 @@ class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMix
                     h_1, h_2 = h, h_1
                 sampled = x
 
-        vae = self.pretransform.to(device=sampled.device, dtype=torch.float32).eval()
-        return vae.decode(sampled.to(torch.float32) * float(vae.audiox_scaling_factor), return_dict=True).sample
+        return self.pretransform.decode(
+            sampled.to(torch.float32) * float(self.pretransform.audiox_scaling_factor),
+            return_dict=True,
+        ).sample
 
     def _encode_text(self, texts: list[str], device: torch.device) -> list[torch.Tensor]:
-        self.text_encoder.to(device)
         encoded = self.tokenizer(
             texts,
             truncation=True,
@@ -765,8 +781,6 @@ class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMix
         return [embeddings, attention_mask]
 
     def _encode_video(self, video_list: list[dict], device: torch.device) -> list[torch.Tensor]:
-        self.clip_encoder.to(device).eval()
-
         video_tensors = [item["video_tensors"] for item in video_list]
         video_sync_frames = torch.cat([item["video_sync_frames"] for item in video_list], dim=0).to(device)
 
@@ -781,7 +795,7 @@ class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMix
             outputs = self.clip_encoder(pixel_values=pixel_values)
         hidden = outputs.last_hidden_state
         hidden = rearrange(hidden, "(b t) p d -> (b p) t d", b=batch_size, t=time_length)
-        hidden = hidden + self.clip_temp_pos_embedding
+        hidden = hidden + self.clip_video_params["temp_pos_embedding"]
         hidden = self.clip_temp_transformer(hidden)
         hidden = rearrange(hidden, "(b p) t d -> b (t p) d", b=batch_size)
         hidden = self.clip_proj(hidden.view(-1, self._clip_in_features))
@@ -789,9 +803,9 @@ class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMix
 
         sync = self.clip_proj_sync(video_sync_frames.view(-1, 240))
         sync = sync.view(batch_size, self._clip_out_features, -1)
-        hidden = hidden + self.clip_sync_weight * sync
+        hidden = hidden + self.clip_video_params["sync_weight"] * sync
 
-        empty = self.clip_empty_visual_feat.expand(batch_size, -1, -1)
+        empty = self.clip_video_params["empty_visual_feat"].expand(batch_size, -1, -1)
         hidden = torch.where(is_zero.view(batch_size, 1, 1), empty, hidden)
         return [hidden, torch.ones(batch_size, 1, device=device)]
 
