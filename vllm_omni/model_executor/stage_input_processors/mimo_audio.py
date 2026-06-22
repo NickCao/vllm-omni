@@ -114,18 +114,6 @@ def _flush_remaining_codes(
     )
 
 
-def _is_codes_empty(codes: Any) -> bool:
-    """Check whether code_predictor_codes should be treated as empty / invalid."""
-    if codes is None:
-        return True
-    if isinstance(codes, torch.Tensor):
-        return codes.numel() == 0 or not codes.any()
-    if hasattr(codes, "__len__") and len(codes) == 0:
-        return True
-    t = torch.tensor(codes, dtype=torch.long) if not isinstance(codes, torch.Tensor) else codes
-    return not t.any()
-
-
 def _to_code_tensor(codes: Any) -> torch.Tensor | None:
     """Convert codes to a (B, 1, 8, 4) long tensor, or return None if shape is invalid."""
     code_tensor = codes.to(torch.long) if isinstance(codes, torch.Tensor) else torch.tensor(codes, dtype=torch.long)
@@ -208,6 +196,12 @@ def llm2code2wav_async_chunk(
             return _flush_remaining_codes(transfer_manager, request_id, chunk_size, left_context_size)
         return None
 
+    code_tensor = _filter_zero_codec_rows(code_tensor)
+    if code_tensor.numel() == 0:
+        if is_finished:
+            return _flush_remaining_codes(transfer_manager, request_id, chunk_size, left_context_size)
+        return None
+
     pad_vec = torch.tensor([TALKER_CODEC_PAD_TOKEN_ID] * 4, device=code_tensor.device, dtype=code_tensor.dtype)
     code_list = prepend_and_flatten_colmajor(code_tensor, pad_vec).tolist()
 
@@ -223,15 +217,17 @@ def llm2code2wav_async_chunk(
     context_length = chunk_length if chunk_length != 0 else chunk_size
     end_index = min(length, left_context_size + context_length)
     left_ctx_frames = max(0, min(length - context_length, left_context_size))
-    flat_codes = torch.tensor(transfer_manager.code_prompt_token_ids[request_id][-end_index:]).reshape(-1).tolist()
+    flat_codes = torch.tensor(transfer_manager.code_prompt_token_ids[request_id][-end_index:]).reshape(-1)
+    if flat_codes.numel() > MAX_CODE2WAV_TOKENS:
+        flat_codes = flat_codes[:MAX_CODE2WAV_TOKENS]
 
     return OmniPayloadStruct(
-        codes=CodesStruct(audio=torch.tensor(flat_codes)),
+        codes=CodesStruct(audio=flat_codes),
         meta=MetaStruct(
             left_context_size=left_ctx_frames,
             codec_chunk_frames=chunk_size,
             codec_left_context_frames=left_context_size,
-            code_flat_numel=len(flat_codes),
+            code_flat_numel=int(flat_codes.numel()),
             finished=torch.tensor(is_finished, dtype=torch.bool),
         ),
     )
