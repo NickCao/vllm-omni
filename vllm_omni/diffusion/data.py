@@ -232,7 +232,7 @@ class DiffusionParallelConfig:
     """Number of GPUs to shard weights across within each replica group. -1 means auto-calculate."""
 
     hsdp_replicate_size: int = 1
-    """Number of replica groups for HSDP. Each replica holds a full sharded copy."""
+    """Number of replica groups for HSDP. Each replica holds a full sharded copy. Only 1 is supported."""
 
     @model_validator(mode="after")
     def _validate_parallel_config(self) -> Self:
