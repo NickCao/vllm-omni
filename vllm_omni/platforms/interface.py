@@ -244,5 +244,9 @@ class UnspecifiedOmniPlatform(OmniPlatform):
     device_type = "cpu"
 
     @classmethod
+    def get_torch_device(cls, local_rank: int | None = None) -> torch.device:
+        return torch.device("cpu")
+
+    @classmethod
     def get_device_count(cls) -> int:
         return 0
