@@ -308,6 +308,14 @@ class UnspecifiedOmniPlatform(OmniPlatform, CpuPlatform):
         return torch.device("cpu")
 
     @classmethod
+    def get_omni_ar_worker_cls(cls) -> str:
+        return "vllm_omni.worker.cpu_ar_worker.CPUARWorker"
+
+    @classmethod
+    def get_omni_generation_worker_cls(cls) -> str:
+        return "vllm_omni.worker.cpu_generation_worker.CPUGenerationWorker"
+
+    @classmethod
     def get_default_stage_config_path(cls) -> str:
         return "vllm_omni/deploy"
 

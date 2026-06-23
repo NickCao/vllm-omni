@@ -178,6 +178,9 @@ class OmniGPUModelRunner(GPUModelRunner):
     @instrument(span_name="Loading (GPU)")
     def load_model(self, *args, **kwargs) -> None:
         super().load_model(*args, **kwargs)
+        self._omni_post_load_model()
+
+    def _omni_post_load_model(self) -> None:
         model = getattr(self, "model", None)
         override_fn = None
         if bool(getattr(model, "supports_sampled_token_ids_cpu_override", False)):
