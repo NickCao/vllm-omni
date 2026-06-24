@@ -456,9 +456,24 @@ def streaming_image_edit_client():
                 SamplingParams(temperature=0.1),
                 OmniDiffusionSamplingParams(),
             ]
+            stage_clients = [
+                SimpleNamespace(stage_type="llm", is_comprehension=True),
+                SimpleNamespace(stage_type="diffusion", is_comprehension=False),
+            ]
+            stage_vllm_configs = [
+                SimpleNamespace(
+                    model_config=SimpleNamespace(
+                        allowed_local_media_path="",
+                        allowed_media_domains=None,
+                    ),
+                ),
+                None,
+            ]
             self.engine = SimpleNamespace(
                 stage_configs=stage_configs,
                 default_sampling_params_list=default_sampling_params_list,
+                stage_clients=stage_clients,
+                stage_vllm_configs=stage_vllm_configs,
             )
             self.default_sampling_params_list = default_sampling_params_list
             self.captured_sampling_params_list = None
