@@ -544,7 +544,8 @@ class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMix
         seconds_total = float(target_len) / float(sample_rate)
         out: list[torch.Tensor] = []
         for raw in raw_prompts:
-            src = extra.get("audio_path")
+            mm = raw.get("multi_modal_data") if isinstance(raw, dict) else None
+            src = (mm or {}).get("audio") or extra.get("audio_path")
             if src is None:
                 out.append(torch.zeros(2, target_len, device=device, dtype=cond_dtype))
                 continue
@@ -575,10 +576,11 @@ class AudioXPipeline(nn.Module, SupportAudioOutput, DiffusionPipelineProfilerMix
             return [empty for _ in raw_prompts]
 
         tensors: list[torch.Tensor] = []
-        for _ in raw_prompts:
-            src = extra.get("video_path")
+        for raw in raw_prompts:
+            mm = raw.get("multi_modal_data") if isinstance(raw, dict) else None
+            src = (mm or {}).get("video") or extra.get("video_path")
             if src is None:
-                raise ValueError(f"audiox_task={task_norm!r} requires video input: set extra_args['video_path'].")
+                raise ValueError(f"audiox_task={task_norm!r} requires video input via multi_modal_data['video'].")
             vt = prepare_video_reference(
                 src,
                 duration=float(self._CLIP_SYNC_DURATION_SEC),

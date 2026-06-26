@@ -146,17 +146,25 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
     _diffusion_extra_body_params: frozenset[str] | None = None
     _diffusion_extra_output_params: frozenset[str] | None = None
 
+    def __init__(self, *args, **kwargs):
+        media_connector: MediaConnector = kwargs.pop("media_connector")
+        super().__init__(*args, **kwargs)
+        self._media_connector = media_connector
+
     @classmethod
     def for_diffusion(
         cls,
         diffusion_engine: AsyncOmni,
         model_name: str,
+        *,
+        media_connector: MediaConnector,
     ) -> "OmniOpenAIServingChat":
         """Create a chat serving instance for diffusion models.
 
         Args:
             diffusion_engine: The async diffusion engine
             model_name: Name of the model being served
+            media_connector: Shared MediaConnector for SSRF-safe URL resolution.
 
         Returns:
             OmniOpenAIServingChat instance configured for diffusion mode
@@ -171,6 +179,7 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
         instance._diffusion_model_name = model_name
         instance._diffusion_extra_body_params = None
         instance._diffusion_extra_output_params = None
+        instance._media_connector = media_connector
         instance.engine_client = None
         instance.has_kv_connector = False
         # Extra body/output params are resolved lazily on first use; see
@@ -814,11 +823,7 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
         if not deferred_parts:
             return messages, None
 
-        media_connector = MediaConnector(
-            media_io_kwargs=getattr(request, "media_io_kwargs", None),
-            allowed_local_media_path=getattr(self.model_config, "allowed_local_media_path", "") or "",
-            allowed_media_domains=getattr(self.model_config, "allowed_media_domains", None),
-        )
+        media_connector = self._media_connector
         multi_modal_data: dict[str, Any] = {}
         for modality, parts in deferred_parts.items():
             multi_modal_data[modality] = await self._materialize_deferred_multimodal_parts(
@@ -3353,10 +3358,14 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
                             status_code=400,
                         )
 
-            if reference_videos:
-                gen_params.extra_args["video_path"] = reference_videos[0]
-            if reference_audios:
-                gen_params.extra_args["audio_path"] = reference_audios[0]
+            if reference_videos or reference_audios:
+                mm = gen_prompt.setdefault("multi_modal_data", {})
+                if reference_videos:
+                    frames, _ = await self._media_connector.fetch_video_async(reference_videos[0])
+                    mm["video"] = frames
+                if reference_audios:
+                    audio_np, sr = await self._media_connector.fetch_audio_async(reference_audios[0])
+                    mm["audio"] = (audio_np, sr)
 
             # Generate image or audio (e.g. AudioX) via AsyncOmni
             diffusion_engine = cast(AsyncOmni, self._diffusion_engine)

@@ -3,20 +3,18 @@
 
 """Input transform utilities for the AudioX diffusion pipeline.
 
-Loads and normalizes the raw audio/video conditioning signals (file path / URL /
-``data:`` URI / ``np.ndarray`` / ``torch.Tensor``) into the (channels, samples) and
-[T, C, H, W] tensors the pipeline needs. The pipeline itself stays focused on model
-forward + sampling logic.
+Loads and normalizes the raw audio/video conditioning signals
+(``np.ndarray`` / ``torch.Tensor`` / local file path) into the
+(channels, samples) and [T, C, H, W] tensors the pipeline needs.
+
+Media URLs are resolved by the API server *before* reaching the engine;
+these helpers only deal with already-materialized data.
 """
 
 from __future__ import annotations
 
-import base64
 import os
-import tempfile
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import av
 import numpy as np
@@ -26,8 +24,6 @@ import torch.nn.functional as F
 import torchaudio.functional as taF
 from einops import rearrange
 from torchvision.io import read_image
-from vllm.multimodal.media import MediaConnector
-from vllm.multimodal.media.base import MediaIO
 
 # AudioX task taxonomy. Tasks beginning with "v" require a video input; tasks containing
 # "t" carry a text prompt. tv2*/v2* share the same conditioning pathways.
@@ -53,53 +49,6 @@ def normalize_prompts(prompts: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
-class _TempFileMediaIO(MediaIO[str]):
-    """MediaIO that writes fetched bytes to a temp file, returns the path."""
-
-    def load_bytes(self, data: bytes) -> str:
-        return self._write_temp(data)
-
-    def load_base64(self, media_type: str, data: str) -> str:
-        return self._write_temp(base64.b64decode(data))
-
-    def load_file(self, filepath: Path) -> str:
-        return str(filepath)
-
-    @staticmethod
-    def _write_temp(data: bytes) -> str:
-        f = tempfile.NamedTemporaryFile(prefix="audiox_media_", suffix=".bin", delete=False)
-        f.write(data)
-        f.close()
-        return f.name
-
-
-def _get_media_connector() -> MediaConnector:
-    """Build a MediaConnector from the current forward context's model config."""
-    from vllm_omni.diffusion.forward_context import get_forward_context
-
-    ctx = get_forward_context()
-    model_config = ctx.vllm_config.model_config if ctx.vllm_config else None
-    return MediaConnector(
-        allowed_local_media_path=getattr(model_config, "allowed_local_media_path", ""),
-        allowed_media_domains=getattr(model_config, "allowed_media_domains", None),
-    )
-
-
-def materialize_media_source(source: str) -> str:
-    """Return a local filesystem path for ``source``.
-
-    Accepts a local path, a ``data:<mime>;base64,...`` URI, or an ``http(s)://`` URL.
-    All inputs are routed through vLLM's ``MediaConnector`` which respects
-    ``--allowed-media-domains`` and ``--allowed-local-media-path`` to prevent
-    SSRF.  Bare local paths are converted to ``file://`` URIs so that the
-    same path restriction applies.
-    """
-    if not urlparse(source).scheme:
-        source = Path(source).resolve().as_uri()
-    connector = _get_media_connector()
-    return connector.load_from_url(source, _TempFileMediaIO())
-
-
 def _load_video_path_pyav(
     path: str,
     *,
@@ -107,7 +56,6 @@ def _load_video_path_pyav(
     duration: float,
     seek_time: float,
 ) -> torch.Tensor:
-    path = materialize_media_source(path)
     seek_time = float(seek_time)
     duration = float(duration)
     end_time = seek_time + duration if duration > 0 else None
@@ -151,7 +99,7 @@ def load_video_source(
     if isinstance(source, str):
         ext = os.path.splitext(source)[1].lower()
         if ext in _IMAGE_EXTS:
-            return read_image(materialize_media_source(source)).unsqueeze(0)
+            return read_image(source).unsqueeze(0)
         return _load_video_path_pyav(
             source,
             target_fps=target_fps,
@@ -226,9 +174,15 @@ def prepare_audio_reference(
     """Decode an audio source into a stereo (2, samples) tensor at the model's rate."""
     target_len = int(model_sample_rate * seconds_total)
     start = int(model_sample_rate * seconds_start)
-    if isinstance(source, str):
-        data, sr = soundfile.read(materialize_media_source(source), dtype="float32", always_2d=True)
-        # soundfile returns channels-last (T, C); project convention is (C, T).
+    if isinstance(source, tuple):
+        data, sr = source
+        wav = torch.from_numpy(np.asarray(data, dtype=np.float32))
+        if wav.dim() == 1:
+            wav = wav.unsqueeze(0)
+        if sr != model_sample_rate:
+            wav = taF.resample(wav, int(sr), model_sample_rate)
+    elif isinstance(source, str):
+        data, sr = soundfile.read(source, dtype="float32", always_2d=True)
         wav = torch.from_numpy(data).transpose(0, 1).contiguous()
         if sr != model_sample_rate:
             wav = taF.resample(wav, sr, model_sample_rate)
@@ -255,7 +209,6 @@ __all__ = [
     "TEXT_VIDEO_TASKS",
     "VIDEO_CONDITIONED_TASKS",
     "normalize_prompts",
-    "materialize_media_source",
     "load_video_source",
     "normalize_video_tensor",
     "adjust_video_duration",

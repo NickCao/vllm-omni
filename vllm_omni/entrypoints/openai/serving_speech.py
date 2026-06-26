@@ -406,6 +406,8 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         diffusion_engine: "Any",
         model_name: str,
         stage_configs: "list[Any] | None" = None,
+        *,
+        media_connector: "MediaConnector",
     ) -> "OmniOpenAIServingSpeech":
         """Create a speech serving instance for pure diffusion TTS models.
 
@@ -417,6 +419,7 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         instance._diffusion_engine = diffusion_engine
         instance._diffusion_model_name = model_name
         instance._diffusion_stage_configs = stage_configs
+        instance._media_connector = media_connector
         instance._tts_model_type = "omnivoice"
         instance._is_tts = False
         instance._is_fish_speech = False
@@ -429,7 +432,9 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
     def __init__(self, *args, **kwargs):
         self.model_name = kwargs.pop("model_name", None)
         self.forced_aligner_config: Any | None = kwargs.pop("forced_aligner_config", None)
+        media_connector: MediaConnector = kwargs.pop("media_connector")
         super().__init__(*args, **kwargs)
+        self._media_connector = media_connector
         self._init_speaker_storage()
 
         # Find and cache the TTS stage (if any) during initialization
@@ -2384,15 +2389,7 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
             )
             return wav_list, sr
 
-        # In diffusion mode, model_config may not be available
-        if self._diffusion_mode:
-            connector = MediaConnector()
-        else:
-            model_config = self.model_config
-            connector = MediaConnector(
-                allowed_local_media_path=model_config.allowed_local_media_path,
-                allowed_media_domains=model_config.allowed_media_domains,
-            )
+        connector = self._media_connector
         fetch_start_s = time.perf_counter()
         wav_np, sr = await connector.fetch_audio_async(ref_audio_str)
         fetch_decode_ms = (time.perf_counter() - fetch_start_s) * 1000.0

@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
 from pytest_mock import MockerFixture
+from vllm.multimodal.media import MediaConnector
 
 from vllm_omni.diffusion.utils.media_utils import mux_video_audio_bytes
 from vllm_omni.entrypoints.openai import api_server
@@ -34,6 +35,8 @@ from vllm_omni.entrypoints.openai.storage import LocalStorageManager
 from vllm_omni.entrypoints.openai.stores import AsyncDictStore, TaskRegistry
 from vllm_omni.errors import GuardrailViolationError
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams
+
+_TEST_MEDIA_CONNECTOR = MediaConnector(allowed_local_media_path="", allowed_media_domains=None)
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -68,10 +71,6 @@ class FakeAsyncOmni:
         self.default_sampling_params_list = [OmniDiffusionSamplingParams()]
         self.captured_prompt = None
         self.captured_sampling_params_list = None
-        self.model_config = SimpleNamespace(
-            allowed_local_media_path="",
-            allowed_media_domains=None,
-        )
 
     async def generate(self, prompt, request_id, sampling_params_list):
         self.captured_prompt = prompt
@@ -87,12 +86,7 @@ class BlockingVideoHandler:
         self.stage_configs = None
         self.started = threading.Event()
         self.cancelled = threading.Event()
-        self._engine_client = SimpleNamespace(
-            model_config=SimpleNamespace(
-                allowed_local_media_path="",
-                allowed_media_domains=None,
-            ),
-        )
+        self._engine_client = SimpleNamespace()
 
     def set_stage_configs_if_missing(self, stage_configs):
         if self.stage_configs is None:
@@ -219,6 +213,7 @@ async def test_server_worker_keeps_engine_alive_until_http_shutdown(monkeypatch)
 def test_client():
     app = FastAPI()
     app.include_router(router)
+    app.state.media_connector = _TEST_MEDIA_CONNECTOR
     app.state.openai_serving_video = OmniOpenAIServingVideo.for_diffusion(
         diffusion_engine=FakeAsyncOmni(),
         model_name="Wan-AI/Wan2.2-T2V-A14B-Diffusers",
@@ -1880,12 +1875,12 @@ def test_worker_fps_multiplier_is_applied_to_sync_encoding(test_client, mocker: 
 def restricted_test_client():
     """Test client whose engine restricts media to trusted.example.com."""
     engine = FakeAsyncOmni()
-    engine.model_config = SimpleNamespace(
+    app = FastAPI()
+    app.include_router(router)
+    app.state.media_connector = MediaConnector(
         allowed_local_media_path="",
         allowed_media_domains=["trusted.example.com"],
     )
-    app = FastAPI()
-    app.include_router(router)
     app.state.openai_serving_video = OmniOpenAIServingVideo.for_diffusion(
         diffusion_engine=engine,
         model_name="Wan-AI/Wan2.2-T2V-A14B-Diffusers",

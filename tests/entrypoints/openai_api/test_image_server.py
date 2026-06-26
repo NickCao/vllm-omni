@@ -22,6 +22,7 @@ from PIL import Image
 from pytest_mock import MockerFixture
 from vllm import SamplingParams
 from vllm.entrypoints.openai.models.protocol import BaseModelPath
+from vllm.multimodal.media import MediaConnector
 from vllm.sampling_params import RequestOutputKind
 
 from vllm_omni.entrypoints.async_omni import AsyncOmni
@@ -40,6 +41,8 @@ from vllm_omni.entrypoints.openai.serving_chat import OmniOpenAIServingChat
 from vllm_omni.entrypoints.openai.video_api_utils import decode_input_reference
 from vllm_omni.errors import GuardrailViolationError
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams
+
+_TEST_MEDIA_CONNECTOR = MediaConnector(allowed_local_media_path="", allowed_media_domains=None)
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -190,7 +193,6 @@ def mock_async_diffusion(mocker: MockerFixture):
             self.captured_sampling_params_list = None
             self.captured_prompt = None
             self.generate_calls = 0
-            self.model_config = SimpleNamespace(allowed_local_media_path="", allowed_media_domains=None)
 
         async def generate(self, **kwargs):
             self.generate_calls += 1
@@ -228,6 +230,7 @@ def test_client(mock_async_diffusion):
         default_sampling_params='{"0": {"num_inference_steps":4, "guidance_scale":7.5, "generator_device":"cpu"}}',
         max_generated_image_size=1024 * 1792,
     )
+    app.state.media_connector = _TEST_MEDIA_CONNECTOR
 
     return TestClient(app)
 
@@ -291,8 +294,10 @@ def async_omni_test_client():
     chat_handler = object.__new__(OmniOpenAIServingChat)
     chat_handler.engine_client = engine
     chat_handler._diffusion_engine = None
+    chat_handler._media_connector = _TEST_MEDIA_CONNECTOR
     app.state.openai_serving_chat = chat_handler
     app.state.engine_client = engine
+    app.state.media_connector = _TEST_MEDIA_CONNECTOR
     app.state.stage_configs = [
         SimpleNamespace(stage_type="llm"),
         SimpleNamespace(stage_type="diffusion"),
@@ -359,8 +364,10 @@ def async_omni_rgba_test_client():
     chat_handler = object.__new__(OmniOpenAIServingChat)
     chat_handler.engine_client = engine
     chat_handler._diffusion_engine = None
+    chat_handler._media_connector = _TEST_MEDIA_CONNECTOR
     app.state.openai_serving_chat = chat_handler
     app.state.engine_client = engine
+    app.state.media_connector = _TEST_MEDIA_CONNECTOR
     app.state.stage_configs = [
         SimpleNamespace(stage_type="llm"),
         SimpleNamespace(stage_type="diffusion"),
@@ -429,7 +436,9 @@ def async_omni_stage_configs_only_client():
     chat_handler = object.__new__(OmniOpenAIServingChat)
     chat_handler.engine_client = engine
     chat_handler._diffusion_engine = None
+    chat_handler._media_connector = _TEST_MEDIA_CONNECTOR
     app.state.openai_serving_chat = chat_handler
+    app.state.media_connector = _TEST_MEDIA_CONNECTOR
     app.state.args = Namespace(
         default_sampling_params='{"1": {"num_inference_steps":4, "guidance_scale":7.5, "generator_device":"cpu"}}',
         max_generated_image_size=1024 * 1792,
@@ -505,7 +514,9 @@ def streaming_image_edit_client():
     chat_handler = object.__new__(OmniOpenAIServingChat)
     chat_handler.engine_client = engine
     chat_handler._diffusion_engine = None
+    chat_handler._media_connector = _TEST_MEDIA_CONNECTOR
     app.state.openai_serving_chat = chat_handler
+    app.state.media_connector = _TEST_MEDIA_CONNECTOR
     app.state.engine_client = engine
     app.state.stage_configs = [
         SimpleNamespace(stage_type="llm"),
@@ -775,7 +786,9 @@ def test_generate_images_async_omni_glm_image_sets_stage0_max_tokens():
     chat_handler = object.__new__(OmniOpenAIServingChat)
     chat_handler.engine_client = engine
     chat_handler._diffusion_engine = None
+    chat_handler._media_connector = _TEST_MEDIA_CONNECTOR
     app.state.openai_serving_chat = chat_handler
+    app.state.media_connector = _TEST_MEDIA_CONNECTOR
     app.state.engine_client = engine
     app.state.stage_configs = [
         SimpleNamespace(stage_type="llm", model_arch="GlmImageForConditionalGeneration"),
@@ -2198,11 +2211,11 @@ class TestLoadInputImagesMediaConnector:
     decode_input_reference."""
 
     @staticmethod
-    def _config(
+    def _connector(
         domains=None,  # allow all domains
         local_path="",  # disallow all local paths
     ):
-        return SimpleNamespace(
+        return MediaConnector(
             allowed_local_media_path=local_path,
             allowed_media_domains=domains,
         )
@@ -2225,29 +2238,29 @@ class TestLoadInputImagesMediaConnector:
     )
     @pytest.mark.asyncio
     async def test_accepted_inputs(self, domains, url):
-        config = self._config(domains=domains)
+        connector = self._connector(domains=domains)
 
-        images = await _load_input_images([url], config)
+        images = await _load_input_images([url], connector)
         assert len(images) == 1
         assert isinstance(images[0], Image.Image)
 
         if isinstance(url, str):
             ref = UrlImageReference(image_url=url)
-            image = await decode_input_reference(ref, None, None, config)
+            image = await decode_input_reference(ref, None, None, connector)
             assert isinstance(image, Image.Image)
 
     @pytest.mark.asyncio
     async def test_http_url_rejected_by_domain_filter(self):
         """An http(s) URL whose domain is not in the allowlist must be rejected."""
-        config = self._config(domains=["example.com"])
+        connector = self._connector(domains=["example.com"])
         http_url = "https://blocked.example.org/image.png"
 
         with pytest.raises(ValueError):
-            await _load_input_images([http_url], config)
+            await _load_input_images([http_url], connector)
 
         ref = UrlImageReference(image_url=http_url)
         with pytest.raises(ValueError):
-            await decode_input_reference(ref, None, None, config)
+            await decode_input_reference(ref, None, None, connector)
 
     @pytest.mark.parametrize(
         "allow_path",
@@ -2261,22 +2274,22 @@ class TestLoadInputImagesMediaConnector:
         img_path = tmp_path / "test.png"
         img_path.write_bytes(make_test_image_bytes((8, 8)))
         file_uri = img_path.as_uri()
-        config = self._config(local_path=str(tmp_path) if allow_path else "")
+        connector = self._connector(local_path=str(tmp_path) if allow_path else "")
 
         # --- _load_input_images ---
         if allow_path:
-            images = await _load_input_images([file_uri], config)
+            images = await _load_input_images([file_uri], connector)
             assert len(images) == 1
             assert isinstance(images[0], Image.Image)
         else:
             with pytest.raises(ValueError):
-                await _load_input_images([file_uri], config)
+                await _load_input_images([file_uri], connector)
 
         # --- decode_input_reference ---
         ref = UrlImageReference(image_url=file_uri)
         if allow_path:
-            image = await decode_input_reference(ref, None, None, config)
+            image = await decode_input_reference(ref, None, None, connector)
             assert isinstance(image, Image.Image)
         else:
             with pytest.raises(ValueError):
-                await decode_input_reference(ref, None, None, config)
+                await decode_input_reference(ref, None, None, connector)

@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
 from vllm.entrypoints.openai.engine.protocol import ErrorInfo, ErrorResponse
+from vllm.multimodal.media import MediaConnector
 
 from vllm_omni.entrypoints.omni_base import OmniEngineDeadError
 from vllm_omni.entrypoints.openai import api_server as api_server_module
@@ -44,6 +45,8 @@ from vllm_omni.model_executor.models.fish_speech.prompt_utils import (
     build_fish_voice_clone_prompt_ids,
 )
 from vllm_omni.outputs import OmniRequestOutput
+
+_TEST_MEDIA_CONNECTOR = MediaConnector(allowed_local_media_path="", allowed_media_domains=None)
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -221,6 +224,7 @@ def test_app(mocker: MockerFixture):
         engine_client=mock_engine_client,
         models=mock_models,
         request_logger=mock_request_logger,
+        media_connector=_TEST_MEDIA_CONNECTOR,
     )
 
     # Skip TTS validation in tests (mock doesn't set up supported_speakers)
@@ -685,7 +689,9 @@ class TestSpeechAPI:
 
         mock_engine.generate = mocker.MagicMock(side_effect=mock_generate)
 
-        server = OmniOpenAIServingSpeech.for_diffusion(diffusion_engine=mock_engine, model_name="test-model")
+        server = OmniOpenAIServingSpeech.for_diffusion(
+            diffusion_engine=mock_engine, model_name="test-model", media_connector=_TEST_MEDIA_CONNECTOR
+        )
 
         # Mock create_audio to avoid actual audio processing/saving
         mocker.patch.object(
@@ -723,6 +729,7 @@ class TestTTSMethods:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
         yield server
         server.shutdown()
@@ -752,6 +759,7 @@ class TestTTSMethods:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
 
         assert server._is_tts is True
@@ -775,6 +783,7 @@ class TestTTSMethods:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
         assert server._is_tts is False
 
@@ -1004,9 +1013,6 @@ class TestTTSMethods:
     async def test_resolve_ref_audio_reuses_decoded_audio_for_same_source(self, speech_server):
         wav = np.linspace(-0.5, 0.5, 48000, dtype=np.float32)
         ref_audio = _wav_data_url(wav, 24000)
-        speech_server.model_config.allowed_local_media_path = ""
-        speech_server.model_config.allowed_media_domains = None
-
         first = await speech_server._resolve_ref_audio(ref_audio)
         second = await speech_server._resolve_ref_audio(ref_audio)
 
@@ -1298,6 +1304,7 @@ class TestTTSMethods:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
 
         # Verify speakers are normalized to lowercase
@@ -1675,6 +1682,7 @@ class TestTTSMethods:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
         # Value is cached during __init__
         assert server._max_instructions_length == 1000
@@ -1697,6 +1705,7 @@ class TestTTSMethods:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
         # Value is cached during __init__
         assert server._max_instructions_length == 750
@@ -1720,6 +1729,7 @@ class TestTTSMethods:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
         # CLI value (2000) should override stage config (750)
         assert server._max_instructions_length == 2000
@@ -1738,6 +1748,7 @@ class TestTTSMethods:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
 
         # Verify cached value
@@ -1922,6 +1933,7 @@ class TestStreamingResponse:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
 
         original_create_speech = speech_server.create_speech
@@ -2052,6 +2064,7 @@ class TestStreamingResponse:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
 
         original_create_speech = speech_server.create_speech
@@ -2752,6 +2765,7 @@ def fish_speech_server(mocker: MockerFixture):
         engine_client=mock_engine_client,
         models=mock_models,
         request_logger=mocker.MagicMock(),
+        media_connector=_TEST_MEDIA_CONNECTOR,
     )
     yield server
     server.shutdown()
@@ -2946,6 +2960,7 @@ class TestWAVStreaming:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
 
         original_create_speech = speech_server.create_speech
@@ -3017,6 +3032,7 @@ def cosyvoice3_server(mocker: MockerFixture):
         engine_client=mock_engine_client,
         models=mock_models,
         request_logger=mocker.MagicMock(),
+        media_connector=_TEST_MEDIA_CONNECTOR,
     )
 
 
@@ -3135,6 +3151,7 @@ def glm_tts_server(mocker: MockerFixture):
         engine_client=mock_engine_client,
         models=mock_models,
         request_logger=mocker.MagicMock(),
+        media_connector=_TEST_MEDIA_CONNECTOR,
     )
 
 
@@ -3209,6 +3226,7 @@ class TestTTSAsyncOffloading:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
         yield server
         server.shutdown()
@@ -3236,6 +3254,7 @@ class TestTTSAsyncOffloading:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
         yield server
         server.shutdown()
@@ -3447,6 +3466,7 @@ class TestTTSAsyncOffloading:
             engine_client=mock_engine_client,
             models=mock_models,
             request_logger=mocker.MagicMock(),
+            media_connector=_TEST_MEDIA_CONNECTOR,
         )
         assert server._tts_executor is not None
         server.shutdown()
@@ -3456,6 +3476,8 @@ class TestTTSAsyncOffloading:
 
     def test_diffusion_instance_shutdown_safe(self, mocker: MockerFixture):
         """Diffusion instances (created via for_diffusion) should have safe shutdown."""
-        server = OmniOpenAIServingSpeech.for_diffusion(diffusion_engine=mocker.MagicMock(), model_name="test-model")
+        server = OmniOpenAIServingSpeech.for_diffusion(
+            diffusion_engine=mocker.MagicMock(), model_name="test-model", media_connector=_TEST_MEDIA_CONNECTOR
+        )
         assert server._tts_executor is None
         server.shutdown()  # Should not raise

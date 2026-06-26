@@ -104,7 +104,9 @@ def test_prepare_multistage_multimodal_inputs_defers_downstream_modalities(servi
             SimpleNamespace(model_stage="aura", requires_multimodal_data=True),
         ]
     )
-    serving_chat.model_config = SimpleNamespace(
+    from vllm.multimodal.media import MediaConnector
+
+    serving_chat._media_connector = MediaConnector(
         allowed_local_media_path="",
         allowed_media_domains=None,
     )

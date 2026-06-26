@@ -140,6 +140,8 @@ def _build_serving_chat():
     )
     mock_render = MagicMock()
 
+    from vllm.multimodal.media import MediaConnector
+
     instance = OmniOpenAIServingChat(
         engine_client=mock_engine,
         models=models,
@@ -148,6 +150,7 @@ def _build_serving_chat():
         request_logger=None,
         chat_template=None,
         chat_template_content_format="auto",
+        media_connector=MediaConnector(allowed_local_media_path="", allowed_media_domains=None),
     )
     instance._create_audio_choice = MagicMock(
         side_effect=lambda omni_res, role, request, stream=False: _mock_audio_choices(

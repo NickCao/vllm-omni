@@ -276,7 +276,7 @@ async def decode_input_reference(
     image_reference: ImageReference | None,
     video_reference: VideoReference | None,
     input_reference_bytes: bytes | None,
-    model_config: Any,
+    connector: MediaConnector,
     *,
     max_video_frames: int | None = None,
     video_keep: Literal["first", "last"] = "first",
@@ -300,19 +300,11 @@ async def decode_input_reference(
         )
 
     if isinstance(image_reference, UrlImageReference):
-        connector = MediaConnector(
-            allowed_local_media_path=model_config.allowed_local_media_path,
-            allowed_media_domains=model_config.allowed_media_domains,
-        )
         return await decode_image_url(image_reference.image_url, connector)
     elif isinstance(image_reference, FileImageReference):
         raise InvalidInputReferenceError("Invalid image_reference: file_id is not supported yet.")
 
     if isinstance(video_reference, UrlVideoReference):
-        connector = MediaConnector(
-            allowed_local_media_path=model_config.allowed_local_media_path,
-            allowed_media_domains=model_config.allowed_media_domains,
-        )
         return await decode_video_url(
             video_reference.video_url,
             connector,
