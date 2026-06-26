@@ -738,6 +738,10 @@ async def omni_init_app_state(
     state.engine_client = engine_client
     state.log_stats = not args.disable_log_stats
     state.args = args
+    state.media_connector = MediaConnector(
+        allowed_local_media_path=getattr(args, "allowed_local_media_path", ""),
+        allowed_media_domains=getattr(args, "allowed_media_domains", None),
+    )
     state.sleeping_stages = set()
 
     # For omni models
@@ -2036,9 +2040,10 @@ async def edit_images(
         # Match the offline path: RGB normalize when the caller opts into
         # Hunyuan-aware behavior. RGBA/P uploads otherwise diverge from offline.
         normalize_edit_images_rgb = bot_task is not None or sys_type is not None
+        media_connector = raw_request.app.state.media_connector
         pil_images = await _load_input_images(
             input_images_list,
-            engine_client.model_config,
+            media_connector,
             normalize_rgb=normalize_edit_images_rgb,
         )
         prompt["multi_modal_data"] = {}
@@ -2046,12 +2051,12 @@ async def edit_images(
 
         if mask_image is not None:
             # Mask role is different (alpha channel matters); never normalize.
-            loaded = await _load_input_images([mask_image], engine_client.model_config, normalize_rgb=False)
+            loaded = await _load_input_images([mask_image], media_connector, normalize_rgb=False)
             prompt["multi_modal_data"]["mask_image"] = loaded[0]
 
         if reference_image is not None:
             loaded = await _load_input_images(
-                [reference_image], engine_client.model_config, normalize_rgb=normalize_edit_images_rgb
+                [reference_image], media_connector, normalize_rgb=normalize_edit_images_rgb
             )
             prompt["multi_modal_data"]["reference_image"] = loaded[0]
 
@@ -2539,7 +2544,7 @@ def _extract_images_from_result(result: Any) -> list[Any]:
 
 async def _load_input_images(
     inputs: list[str],
-    model_config: Any,
+    connector: MediaConnector,
     *,
     normalize_rgb: bool = True,
 ) -> list[Image.Image]:
@@ -2552,11 +2557,6 @@ async def _load_input_images(
 
     if isinstance(inputs, str):
         inputs = [inputs]
-
-    connector = MediaConnector(
-        allowed_local_media_path=model_config.allowed_local_media_path,
-        allowed_media_domains=model_config.allowed_media_domains,
-    )
 
     images: list[Image.Image] = []
 
@@ -3025,7 +3025,7 @@ async def _parse_video_form(
             request.image_reference,
             request.video_reference,
             input_reference_bytes,
-            model_config=handler._engine_client.model_config,
+            connector=raw_request.app.state.media_connector,
             max_video_frames=decode_spec.max_frames,
             video_keep=decode_spec.keep,
         )
@@ -3037,14 +3037,10 @@ async def _parse_video_form(
 
     reference_audio: ReferenceAudio | None = None
     if request.audio_reference is not None:
-        audio_connector = MediaConnector(
-            allowed_local_media_path=handler._engine_client.model_config.allowed_local_media_path,
-            allowed_media_domains=handler._engine_client.model_config.allowed_media_domains,
-        )
         try:
             audio_path = await decode_audio_url(
                 request.audio_reference.audio_url,
-                audio_connector,
+                raw_request.app.state.media_connector,
             )
         except InvalidInputReferenceError as exc:
             raise HTTPException(400, detail=str(exc)) from exc

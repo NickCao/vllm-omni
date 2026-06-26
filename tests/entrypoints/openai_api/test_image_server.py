@@ -22,6 +22,7 @@ from PIL import Image
 from pytest_mock import MockerFixture
 from vllm import SamplingParams
 from vllm.entrypoints.openai.models.protocol import BaseModelPath
+from vllm.multimodal.media import MediaConnector
 from vllm.sampling_params import RequestOutputKind
 
 from vllm_omni.entrypoints.async_omni import AsyncOmni
@@ -190,7 +191,6 @@ def mock_async_diffusion(mocker: MockerFixture):
             self.captured_sampling_params_list = None
             self.captured_prompt = None
             self.generate_calls = 0
-            self.model_config = SimpleNamespace(allowed_local_media_path="", allowed_media_domains=None)
 
         async def generate(self, **kwargs):
             self.generate_calls += 1
@@ -228,7 +228,7 @@ def test_client(mock_async_diffusion):
         default_sampling_params='{"0": {"num_inference_steps":4, "guidance_scale":7.5, "generator_device":"cpu"}}',
         max_generated_image_size=1024 * 1792,
     )
-
+    app.state.media_connector = MediaConnector(allowed_local_media_path="", allowed_media_domains=None)
     return TestClient(app)
 
 
@@ -280,10 +280,6 @@ def async_omni_test_client():
         def get_diffusion_od_config(self):
             return self.od_config
 
-        @property
-        def model_config(self):
-            return SimpleNamespace(allowed_local_media_path="", allowed_media_domains=None)
-
     app = FastAPI()
     app.include_router(router)
 
@@ -301,6 +297,7 @@ def async_omni_test_client():
         default_sampling_params='{"1": {"num_inference_steps":4, "guidance_scale":7.5, "generator_device":"cpu"}}',
         max_generated_image_size=1048576,  # 1024*1024 to support resolution tests
     )
+    app.state.media_connector = MediaConnector(allowed_local_media_path="", allowed_media_domains=None)
     return TestClient(app)
 
 
@@ -348,10 +345,6 @@ def async_omni_rgba_test_client():
         def get_diffusion_od_config(self):
             return self.od_config
 
-        @property
-        def model_config(self):
-            return SimpleNamespace(allowed_local_media_path="", allowed_media_domains=None)
-
     app = FastAPI()
     app.include_router(router)
 
@@ -369,6 +362,7 @@ def async_omni_rgba_test_client():
         default_sampling_params='{"1": {"num_inference_steps":4, "guidance_scale":7.5, "generator_device":"cpu"}}',
         max_generated_image_size=1048576,
     )
+    app.state.media_connector = MediaConnector(allowed_local_media_path="", allowed_media_domains=None)
     return TestClient(app)
 
 
@@ -416,10 +410,6 @@ def async_omni_stage_configs_only_client():
         def get_diffusion_od_config(self):
             return self.od_config
 
-        @property
-        def model_config(self):
-            return SimpleNamespace(allowed_local_media_path="", allowed_media_domains=None)
-
     app = FastAPI()
     app.include_router(router)
 
@@ -434,6 +424,7 @@ def async_omni_stage_configs_only_client():
         default_sampling_params='{"1": {"num_inference_steps":4, "guidance_scale":7.5, "generator_device":"cpu"}}',
         max_generated_image_size=1024 * 1792,
     )
+    app.state.media_connector = MediaConnector(allowed_local_media_path="", allowed_media_domains=None)
     return TestClient(app)
 
 
@@ -456,24 +447,9 @@ def streaming_image_edit_client():
                 SamplingParams(temperature=0.1),
                 OmniDiffusionSamplingParams(),
             ]
-            stage_clients = [
-                SimpleNamespace(stage_type="llm", is_comprehension=True),
-                SimpleNamespace(stage_type="diffusion", is_comprehension=False),
-            ]
-            stage_vllm_configs = [
-                SimpleNamespace(
-                    model_config=SimpleNamespace(
-                        allowed_local_media_path="",
-                        allowed_media_domains=None,
-                    ),
-                ),
-                None,
-            ]
             self.engine = SimpleNamespace(
                 stage_configs=stage_configs,
                 default_sampling_params_list=default_sampling_params_list,
-                stage_clients=stage_clients,
-                stage_vllm_configs=stage_vllm_configs,
             )
             self.default_sampling_params_list = default_sampling_params_list
             self.captured_sampling_params_list = None
@@ -515,6 +491,7 @@ def streaming_image_edit_client():
         default_sampling_params='{"1": {"num_inference_steps":4, "guidance_scale":7.5, "generator_device":"cpu"}}',
         max_generated_image_size=1024 * 1792,
     )
+    app.state.media_connector = MediaConnector(allowed_local_media_path="", allowed_media_domains=None)
     return TestClient(app)
 
 
@@ -764,10 +741,6 @@ def test_generate_images_async_omni_glm_image_sets_stage0_max_tokens():
 
         def get_diffusion_od_config(self):
             return self.od_config
-
-        @property
-        def model_config(self):
-            return SimpleNamespace(allowed_local_media_path="", allowed_media_domains=None)
 
     app = FastAPI()
     app.include_router(router)
@@ -2202,7 +2175,7 @@ class TestLoadInputImagesMediaConnector:
         domains=None,  # allow all domains
         local_path="",  # disallow all local paths
     ):
-        return SimpleNamespace(
+        return MediaConnector(
             allowed_local_media_path=local_path,
             allowed_media_domains=domains,
         )
