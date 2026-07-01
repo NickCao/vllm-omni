@@ -12,14 +12,11 @@ Categories under ``OmniPayload``:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import Any, TypedDict
 
 import msgspec
 import numpy as np
 import torch
-
-if TYPE_CHECKING:
-    from vllm_omni.engine import AdditionalInformationEntry, AdditionalInformationPayload
 
 
 class HiddenStates(TypedDict, total=False):
@@ -266,24 +263,6 @@ def to_dict(struct: OmniPayloadStruct) -> dict[str, Any]:
     return out
 
 
-_DTYPE_TO_NAME: dict[torch.dtype, str] = {
-    torch.float32: "float32",
-    torch.float16: "float16",
-    torch.bfloat16: "bfloat16",
-    torch.float64: "float64",
-    torch.int64: "int64",
-    torch.int32: "int32",
-    torch.int16: "int16",
-    torch.int8: "int8",
-    torch.uint8: "uint8",
-    torch.bool: "bool",
-}
-
-
-def _dtype_to_name(dtype: torch.dtype) -> str:
-    return _DTYPE_TO_NAME.get(dtype, str(dtype).replace("torch.", ""))
-
-
 # ── Keys whose values are nested dicts (TypedDict sub-categories) ──
 _NESTED_KEYS = frozenset({"hidden_states", "embed", "ids", "codes", "meta"})
 
@@ -332,69 +311,3 @@ def unflatten_payload(flat: dict[str, Any]) -> dict[str, Any]:
         else:
             result[key] = value
     return result
-
-
-def _serialize_tensor(t: torch.Tensor) -> AdditionalInformationEntry:
-    from vllm_omni.engine import AdditionalInformationEntry
-
-    t_cpu = t.detach().to("cpu").contiguous()
-    return AdditionalInformationEntry(
-        tensor_data=t_cpu.numpy().tobytes(),
-        tensor_shape=list(t_cpu.shape),
-        tensor_dtype=_dtype_to_name(t_cpu.dtype),
-    )
-
-
-def _deserialize_tensor(entry: AdditionalInformationEntry) -> torch.Tensor:
-    dt = np.dtype(entry.tensor_dtype or "float32")
-    arr = np.frombuffer(entry.tensor_data, dtype=dt)  # type: ignore[arg-type]
-    arr = arr.reshape(entry.tensor_shape)
-    return torch.from_numpy(arr.copy())
-
-
-def serialize_payload(
-    payload: OmniPayload,
-) -> AdditionalInformationPayload | None:
-    """Serialize an ``OmniPayload`` for EngineCore transport.
-
-    Uses :func:`flatten_payload` to produce dotted keys, then converts
-    each value to an ``AdditionalInformationEntry``.
-    """
-    from vllm_omni.engine import (
-        AdditionalInformationEntry,
-        AdditionalInformationPayload,
-    )
-
-    flat = flatten_payload(payload)
-    entries: dict[str, AdditionalInformationEntry] = {}
-
-    for key, value in flat.items():
-        if isinstance(value, torch.Tensor):
-            entries[key] = _serialize_tensor(value)
-        elif isinstance(value, list):
-            entries[key] = AdditionalInformationEntry(list_data=value)
-        elif value is not None:
-            entries[key] = AdditionalInformationEntry(scalar_data=value)
-
-    return AdditionalInformationPayload(entries=entries) if entries else None
-
-
-def deserialize_payload(
-    wire: AdditionalInformationPayload,
-) -> OmniPayload:
-    """Deserialize an ``AdditionalInformationPayload`` back to ``OmniPayload``.
-
-    Decodes entries to tensors/lists, then uses :func:`unflatten_payload`
-    to reconstruct the nested structure.
-    """
-    flat: dict[str, Any] = {}
-
-    for key, entry in wire.entries.items():
-        if entry.tensor_data is not None:
-            flat[key] = _deserialize_tensor(entry)
-        elif entry.list_data is not None:
-            flat[key] = entry.list_data
-        elif entry.scalar_data is not None:
-            flat[key] = entry.scalar_data
-
-    return unflatten_payload(flat)  # type: ignore[return-value]

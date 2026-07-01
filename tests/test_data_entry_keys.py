@@ -12,14 +12,15 @@ from vllm_omni.data_entry_keys import (
     MetaStruct,
     OmniPayload,
     OmniPayloadStruct,
-    deserialize_payload,
     flatten_payload,
-    serialize_payload,
     to_dict,
     to_struct,
     unflatten_payload,
 )
-from vllm_omni.engine import AdditionalInformationPayload
+from vllm_omni.engine.serialization import (
+    deserialize_additional_information,
+    serialize_additional_information,
+)
 
 
 class TestOmniPayloadStruct:
@@ -303,25 +304,25 @@ class TestSerializeDeserializePayload:
         original: OmniPayload = {
             "hidden_states": {"output": torch.tensor([[1.0, 2.0], [3.0, 4.0]])},
         }
-        wire = serialize_payload(original)
-        assert isinstance(wire, AdditionalInformationPayload)
-        restored = deserialize_payload(wire)
+        wire = serialize_additional_information(original)
+        assert isinstance(wire, bytes)
+        restored = deserialize_additional_information(wire)
         assert torch.equal(restored["hidden_states"]["output"], original["hidden_states"]["output"])
 
     def test_list_round_trip(self):
         original: OmniPayload = {
             "ids": {"prompt": [10, 20, 30]},
         }
-        wire = serialize_payload(original)
-        restored = deserialize_payload(wire)
+        wire = serialize_additional_information(original)
+        restored = deserialize_additional_information(wire)
         assert restored["ids"]["prompt"] == [10, 20, 30]
 
     def test_finished_tensor_round_trip(self):
         original: OmniPayload = {
             "meta": {"finished": torch.tensor(True, dtype=torch.bool), "left_context_size": 5},
         }
-        wire = serialize_payload(original)
-        restored = deserialize_payload(wire)
+        wire = serialize_additional_information(original)
+        restored = deserialize_additional_information(wire)
         assert isinstance(restored["meta"]["finished"], torch.Tensor)
         assert restored["meta"]["finished"].dtype == torch.bool
         assert restored["meta"]["finished"].item() is True
@@ -334,8 +335,8 @@ class TestSerializeDeserializePayload:
             "meta": {"finished": torch.tensor(False, dtype=torch.bool), "ar_width": 4},
             "codes": {"audio": torch.tensor([3.0])},
         }
-        wire = serialize_payload(original)
-        restored = deserialize_payload(wire)
+        wire = serialize_additional_information(original)
+        restored = deserialize_additional_information(wire)
         assert torch.equal(restored["hidden_states"]["output"], original["hidden_states"]["output"])
         assert restored["ids"]["all"] == [1, 2, 3]
         assert restored["meta"]["finished"].item() is False
@@ -349,8 +350,8 @@ class TestSerializeDeserializePayload:
                 "layers": {0: torch.tensor([2.0]), 24: torch.tensor([3.0])},
             },
         }
-        wire = serialize_payload(original)
-        restored = deserialize_payload(wire)
+        wire = serialize_additional_information(original)
+        restored = deserialize_additional_information(wire)
         assert torch.equal(restored["hidden_states"]["output"], torch.tensor([1.0]))
         assert torch.equal(restored["hidden_states"]["layers"][0], torch.tensor([2.0]))
         assert torch.equal(restored["hidden_states"]["layers"][24], torch.tensor([3.0]))
@@ -359,22 +360,26 @@ class TestSerializeDeserializePayload:
         # bfloat16 excluded: numpy() doesn't support it; callers must cast before serializing.
         for dtype in [torch.float16, torch.float32, torch.int64, torch.int32, torch.bool]:
             original: OmniPayload = {"codes": {"audio": torch.tensor([1], dtype=dtype)}}
-            wire = serialize_payload(original)
-            restored = deserialize_payload(wire)
+            wire = serialize_additional_information(original)
+            restored = deserialize_additional_information(wire)
             assert restored["codes"]["audio"].dtype == dtype, f"dtype mismatch for {dtype}"
 
     def test_tensor_shape_preserved(self):
         t = torch.randn(3, 4, 5)
         original: OmniPayload = {"hidden_states": {"output": t}}
-        wire = serialize_payload(original)
-        restored = deserialize_payload(wire)
+        wire = serialize_additional_information(original)
+        restored = deserialize_additional_information(wire)
         assert restored["hidden_states"]["output"].shape == (3, 4, 5)
         assert torch.allclose(restored["hidden_states"]["output"], t)
 
-    def test_empty_payload_returns_none(self):
-        assert serialize_payload({}) is None
+    def test_empty_payload_round_trip(self):
+        wire = serialize_additional_information({})
+        assert isinstance(wire, bytes)
+        restored = deserialize_additional_information(wire)
+        assert restored == {}
 
-    def test_none_values_skipped(self):
+    def test_none_values_preserved(self):
         original: OmniPayload = {"meta": {"finished": None}}
-        wire = serialize_payload(original)
-        assert wire is None
+        wire = serialize_additional_information(original)
+        restored = deserialize_additional_information(wire)
+        assert restored["meta"]["finished"] is None

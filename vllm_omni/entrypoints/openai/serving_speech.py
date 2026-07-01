@@ -2118,12 +2118,9 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
             request.ref_text or "",
         )
         prompt = tokens_input(prompt_token_ids=out["prompt_token_ids"])
-        # Pass tensors at the top level of additional_information (NOT list-
-        # wrapped). ``vllm_omni.data_entry_keys.serialize_payload`` routes
-        # bare ``torch.Tensor`` values through ``_serialize_tensor``; a list
-        # containing tensors would fall into the ``list_data`` field which
-        # msgspec cannot serialize and the tensors would be dropped over the
-        # process boundary (silent voice-clone failure).
+        # Pass tensors at the top level of additional_information (NOT
+        # list-wrapped) for consistency with the model executor's expected
+        # access pattern.
         prompt["additional_information"] = {
             "audio_input_ids": out["audio_input_ids"],
             "audio_input_ids_mask": out["audio_input_ids_mask"],

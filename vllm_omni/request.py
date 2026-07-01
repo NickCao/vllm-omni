@@ -11,7 +11,7 @@ from vllm.v1.request import Request
 if TYPE_CHECKING:
     from vllm.v1.core.kv_cache_utils import BlockHash
 
-from vllm_omni.engine import AdditionalInformationPayload, OmniEngineCoreRequest, PromptEmbedsPayload
+from vllm_omni.engine import OmniEngineCoreRequest, PromptEmbedsPayload
 
 
 class OmniRequest(Request):
@@ -34,7 +34,7 @@ class OmniRequest(Request):
         prompt_embeds: PromptEmbedsPayload | torch.Tensor | None = None,
         # Optional external request ID for tracking
         external_req_id: str | None = None,
-        additional_information: AdditionalInformationPayload | None = None,
+        additional_information: bytes | None = None,
         **kwargs,
     ):
         if prompt_embeds is not None:
@@ -47,7 +47,7 @@ class OmniRequest(Request):
         # Optional external request ID for tracking
         self.external_req_id: str | None = external_req_id
         # Serialized additional information payload (optional)
-        self.additional_information: AdditionalInformationPayload | None = additional_information
+        self.additional_information: bytes | None = additional_information
 
     @staticmethod
     def _maybe_decode_prompt_embeds(
@@ -116,7 +116,7 @@ class OmniStreamingUpdate:
     max_tokens: int
     arrival_time: float
     sampling_params: SamplingParams | None
-    additional_information: AdditionalInformationPayload | None = None
+    additional_information: bytes | None = None
 
     @classmethod
     def from_request(cls, request: "Request") -> "OmniStreamingUpdate | None":

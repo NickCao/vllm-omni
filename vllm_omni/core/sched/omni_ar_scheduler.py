@@ -776,13 +776,7 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                         }
                         # Also update request.additional_information for good measure
                         add_info = getattr(request, "additional_information", None)
-                        # If additional_information is an AdditionalInformationPayload-like object,
-                        # unpack it into a plain dict.
-                        if (
-                            add_info is not None
-                            and hasattr(add_info, "entries")
-                            and isinstance(getattr(add_info, "entries"), dict)
-                        ):
+                        if isinstance(add_info, bytes):
                             request.additional_information = deserialize_additional_information(add_info)
                             add_info = request.additional_information
                         if add_info is None:
