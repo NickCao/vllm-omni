@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import os
 import urllib.request
+from pathlib import Path
 
 import pytest
 import torch
 from vllm import SamplingParams
+from vllm.multimodal.utils import fetch_audio
 
 from tests.helpers.mark import hardware_test
 from tests.helpers.runtime import OmniRunner
@@ -64,13 +66,14 @@ def ref_audio_path(tmp_path_factory) -> str:
 
 
 def _build_request(text: str, ref_audio_path: str, seed: int = 42) -> dict:
+    audio, sr = fetch_audio(Path(ref_audio_path).resolve().as_uri())
     return {
         "prompt": "<|im_start|>assistant\n",
         "additional_information": {
             "task_type": ["voice_clone"],
             "text": [text],
             "mode": ["voice_clone"],
-            "prompt_audio_path": [ref_audio_path],
+            "prompt_audio_array": [(audio, sr)],
             "seed": [seed],
         },
     }

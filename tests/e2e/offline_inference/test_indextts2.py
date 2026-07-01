@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from vllm.multimodal.utils import fetch_audio
 
 from tests.helpers.mark import hardware_test
 from tests.helpers.runtime import OmniRunner
@@ -63,7 +64,7 @@ def _sample_rate_from_mm(mm: dict) -> int:
 def _build_request(text: str, ref_audio: str, **extra) -> dict:
     info = {
         "text": [text],
-        "voice": [ref_audio],
+        "voice": [fetch_audio(Path(ref_audio).resolve().as_uri())],
     }
     info.update(extra)
     return {

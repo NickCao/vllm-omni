@@ -11,6 +11,7 @@ os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 import numpy as np
 import pytest
+from vllm.multimodal.utils import fetch_audio
 
 from tests.helpers.mark import hardware_test
 from tests.helpers.media import get_asset_path
@@ -167,8 +168,8 @@ def test_soulxsinger_multistage_from_audio(
             guidance_scale=3.0,
             seed=42,
             extra_args={
-                "prompt_audio": str(PROMPT_AUDIO),
-                "target_audio": str(TARGET_AUDIO),
+                "prompt_audio": fetch_audio(Path(PROMPT_AUDIO).resolve().as_uri()),
+                "target_audio": fetch_audio(Path(TARGET_AUDIO).resolve().as_uri()),
                 "preprocess_weights_dir": str(preprocess_dir),
                 **extra_args,
             },

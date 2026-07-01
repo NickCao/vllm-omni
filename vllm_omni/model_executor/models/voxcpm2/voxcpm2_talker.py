@@ -20,6 +20,7 @@ from collections.abc import Iterable
 from types import MethodType
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn as nn
 from vllm.config import VllmConfig
@@ -263,7 +264,9 @@ def _encode_raw_audio(
     Mirrors ``VoxCPM2Model._encode_wav`` but accepts in-memory samples
     instead of a file path (needed for the OpenAI speech API).
     """
-    if isinstance(samples, list):
+    if isinstance(samples, np.ndarray):
+        audio = torch.from_numpy(samples).float()
+    elif isinstance(samples, list):
         audio = torch.tensor(samples, dtype=torch.float32)
     else:
         audio = samples.float()
@@ -1047,13 +1050,11 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         tts = self.tts
 
         def _is_raw_audio(v: Any) -> bool:
-            import numbers
-
             return (
                 isinstance(v, (list, tuple))
                 and len(v) == 2
-                and isinstance(v[1], numbers.Integral)
-                and isinstance(v[0], (list, torch.Tensor))
+                and isinstance(v[1], (int, float))
+                and isinstance(v[0], (list, np.ndarray, torch.Tensor))
             )
 
         if not _is_raw_audio(ref_audio) and not _is_raw_audio(prompt_audio):
