@@ -658,8 +658,7 @@ class DiffusersPipelineLoader:
         self._process_weights_after_loading(model, target_device)
 
         # Discover pipeline components (DiT, encoders, VAEs) via
-        # ModuleDiscovery, which consults SupportsComponentDiscovery
-        # when available and falls back to well-known attribute names.
+        # ModuleDiscovery, which requires SupportsComponentDiscovery.
         # This supports nested pipelines (e.g. LTX2DistilledPipeline
         # where the transformer lives at "pipe.transformer").
         discovered_modules = ModuleDiscovery.discover(model)
