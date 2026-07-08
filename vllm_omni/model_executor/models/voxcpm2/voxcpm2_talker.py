@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterable, Sequence
 from types import MethodType
 from typing import Any, NamedTuple, Protocol, TypedDict
 
+import numpy as np
 import torch
 import torch.nn as nn
 from typing_extensions import Unpack
@@ -217,6 +218,8 @@ def _encode_raw_audio(
     """
     if isinstance(samples, list):
         audio = torch.tensor(samples, dtype=torch.float32)
+    elif isinstance(samples, np.ndarray):
+        audio = torch.from_numpy(samples).float()
     else:
         audio = samples.float()
     if audio.ndim == 1:
@@ -1055,8 +1058,8 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             return (
                 isinstance(v, (list, tuple))
                 and len(v) == 2
-                and isinstance(v[1], numbers.Integral)
-                and isinstance(v[0], (list, torch.Tensor))
+                and isinstance(v[1], (numbers.Integral, float))
+                and isinstance(v[0], (list, np.ndarray, torch.Tensor))
             )
 
         if not _is_raw_audio(ref_audio) and not _is_raw_audio(prompt_audio):

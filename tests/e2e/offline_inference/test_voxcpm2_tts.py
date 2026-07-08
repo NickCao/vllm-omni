@@ -2,9 +2,11 @@
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 import torch
+from vllm.multimodal.utils import fetch_audio
 
 from tests.helpers.mark import hardware_test
 from tests.helpers.runtime import OmniRunner
@@ -84,7 +86,9 @@ def test_voxcpm2_voice_clone_002(omni_runner: OmniRunner) -> None:
         [
             {
                 "prompt": "Hello, this is a voice clone demo.",
-                "additional_information": {"reference_audio": ref_path},
+                "additional_information": {
+                    "reference_audio": fetch_audio(Path(ref_path).resolve().as_uri()),
+                },
             }
         ]
     )
