@@ -6,23 +6,17 @@
   "batch_norm_eps": 0.0001,
   "batch_norm_momentum": 0.1,
   "block_out_channels": [
-    128,
-    256,
-    512,
-    512
+    32
   ],
   "down_block_types": [
-    "DownEncoderBlock2D",
-    "DownEncoderBlock2D",
-    "DownEncoderBlock2D",
     "DownEncoderBlock2D"
   ],
   "force_upcast": true,
   "in_channels": 3,
-  "latent_channels": 32,
-  "layers_per_block": 2,
+  "latent_channels": 16,
+  "layers_per_block": 1,
   "mid_block_add_attention": true,
-  "norm_num_groups": 32,
+  "norm_num_groups": 16,
   "out_channels": 3,
   "patch_size": [
     2,
@@ -30,9 +24,6 @@
   ],
   "sample_size": 1024,
   "up_block_types": [
-    "UpDecoderBlock2D",
-    "UpDecoderBlock2D",
-    "UpDecoderBlock2D",
     "UpDecoderBlock2D"
   ],
   "use_post_quant_conv": true,
