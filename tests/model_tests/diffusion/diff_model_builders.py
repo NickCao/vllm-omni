@@ -90,3 +90,8 @@ def build_tiny_from_configs(pipeline_name: str, model_id: str) -> str:
 def tiny_flux2_klein_builder() -> str:
     """Build a tiny Flux2Klein model from vendored configs."""
     return build_tiny_from_configs("Flux2KleinPipeline", "black-forest-labs/FLUX.2-klein-4B")
+
+
+def tiny_ltx2_builder() -> str:
+    """Build a tiny LTX2 model from vendored configs."""
+    return build_tiny_from_configs("LTX2Pipeline", "Lightricks/LTX-2")
