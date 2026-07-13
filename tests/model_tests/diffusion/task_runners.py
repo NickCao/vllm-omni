@@ -28,6 +28,15 @@ IMAGE_GEN_SAMPLING_PARAMS = OmniDiffusionSamplingParams(
     seed=42,
 )
 
+VIDEO_NUM_FRAMES = 9
+VIDEO_GEN_SAMPLING_PARAMS = OmniDiffusionSamplingParams(
+    num_inference_steps=4,
+    height=HEIGHT,
+    width=WIDTH,
+    num_frames=VIDEO_NUM_FRAMES,
+    seed=42,
+)
+
 # Online extra_body for diffusion requests
 IMAGE_GEN_EXTRA_BODY = {
     "height": HEIGHT,
@@ -70,8 +79,23 @@ def _get_online_images(responses: list[DiffusionResponse]) -> list[Image.Image]:
     return images
 
 
+def _validate_video(outputs: list[OmniRequestOutput], expected_n: int = 1):
+    """Given a set of outputs, ensure we got video frames with the expected shape."""
+    assert len(outputs) == expected_n
+    for output in outputs:
+        # Video models return numpy arrays via output.images
+        images = output.images
+        assert len(images) > 0
+        for frame_data in images:
+            assert isinstance(frame_data, np.ndarray)
+
+
 ### Offline helpers
 def _run_offline_t2i(omni: Omni, params: OmniDiffusionSamplingParams = IMAGE_GEN_SAMPLING_PARAMS):
+    return omni.generate({"prompt": PROMPT}, params)
+
+
+def _run_offline_t2v(omni: Omni, params: OmniDiffusionSamplingParams = VIDEO_GEN_SAMPLING_PARAMS):
     return omni.generate({"prompt": PROMPT}, params)
 
 
@@ -128,6 +152,11 @@ def run_and_validate_text_to_image_request(omni: Omni):
 def run_and_validate_image_to_image_request(omni: Omni):
     """Run and validate an image to image request."""
     _validate_images(_get_offline_images(_run_offline_i2i(omni)))
+
+
+def run_and_validate_text_to_video_request(omni: Omni):
+    """Run and validate a text to video request."""
+    _validate_video(_run_offline_t2v(omni))
 
 
 def run_and_validate_text_to_image_determinism(omni: Omni):
