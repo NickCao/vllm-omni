@@ -88,6 +88,11 @@ def _validate_video(outputs: list[OmniRequestOutput], expected_n: int = 1):
         assert len(images) > 0
         for frame_data in images:
             assert isinstance(frame_data, np.ndarray)
+            # (num_outputs, num_frames, H, W, C) or (num_frames, H, W, C)
+            assert frame_data.ndim in (4, 5), f"Expected 4D or 5D video array, got shape {frame_data.shape}"
+            assert frame_data.shape[-3] == HEIGHT, f"Expected height {HEIGHT}, got {frame_data.shape[-3]}"
+            assert frame_data.shape[-2] == WIDTH, f"Expected width {WIDTH}, got {frame_data.shape[-2]}"
+            assert frame_data.shape[-1] == 3, f"Expected 3 channels (RGB), got {frame_data.shape[-1]}"
 
 
 ### Offline helpers
