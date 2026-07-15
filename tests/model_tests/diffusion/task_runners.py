@@ -45,6 +45,15 @@ IMAGE_GEN_EXTRA_BODY = {
     "seed": 42,
 }
 
+# Online form_data for video generation requests (multipart /v1/videos API)
+VIDEO_GEN_FORM_DATA = {
+    "height": HEIGHT,
+    "width": WIDTH,
+    "num_inference_steps": 4,
+    "num_frames": VIDEO_NUM_FRAMES,
+    "seed": 42,
+}
+
 
 ### Shared validation
 def _validate_images(images: list[Image.Image], expected_n: int = 1):
@@ -178,6 +187,25 @@ def run_and_validate_text_to_image_multi_output(omni: Omni):
     _validate_images(_get_offline_images(_run_offline_t2i(omni, params)), expected_n=2)
 
 
+def _run_online_t2v(
+    server: OmniServer, client: OpenAIClientHandler, form_data: dict | None = None
+) -> list[DiffusionResponse]:
+    """Run a text to video request through the server's /v1/videos API."""
+    data = dict(form_data or VIDEO_GEN_FORM_DATA)
+    data.setdefault("prompt", PROMPT)
+    data.setdefault("model", server.model)
+    return client.send_video_diffusion_request({"form_data": data})
+
+
+def _get_online_videos(responses: list[DiffusionResponse]) -> list:
+    """Extract the videos from a server response."""
+    assert len(responses) == 1
+    videos = responses[0].videos
+    assert videos is not None
+    assert len(videos) > 0
+    return videos
+
+
 ### Online task runners
 def run_and_validate_online_text_to_image_request(server: OmniServer, client: OpenAIClientHandler):
     """Run and validate a text to image request through the server."""
@@ -204,3 +232,8 @@ def run_and_validate_online_text_to_image_multi_output(server: OmniServer, clien
         _get_online_images(_run_online_t2i(server, client, extra_body=extra_body)),
         expected_n=2,
     )
+
+
+def run_and_validate_online_text_to_video_request(server: OmniServer, client: OpenAIClientHandler):
+    """Run and validate a text to video request through the server."""
+    _get_online_videos(_run_online_t2v(server, client))
