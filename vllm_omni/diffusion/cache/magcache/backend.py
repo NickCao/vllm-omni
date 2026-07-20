@@ -8,9 +8,11 @@ This module provides the MagCache backend that implements the CacheBackend
 interface using the hooks-based MagCache system.
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
+import torch.nn as nn
 from vllm.logger import init_logger
 
 from vllm_omni.diffusion.cache.base import CacheBackend
@@ -22,8 +24,26 @@ from vllm_omni.diffusion.cache.magcache.strategy import (
     get_strategy,
 )
 from vllm_omni.diffusion.data import DiffusionCacheConfig
+from vllm_omni.diffusion.offloader.module_collector import ModuleDiscovery
 
 logger = init_logger(__name__)
+
+
+@dataclass
+class MagCacheState:
+    transformer_id: int
+    config: MagCacheConfig
+
+
+def _discover_dits(pipeline: Any) -> list[nn.Module]:
+    """Return all DiT modules from the pipeline via ModuleDiscovery."""
+    dits = ModuleDiscovery.discover(pipeline).dits
+    if not dits:
+        raise AttributeError(
+            f"{type(pipeline).__name__} has no discoverable DiT modules. "
+            "Implement SupportsComponentDiscovery to declare DiT modules."
+        )
+    return dits
 
 
 class MagCacheBackend(CacheBackend):
@@ -56,23 +76,11 @@ class MagCacheBackend(CacheBackend):
     def __init__(self, config: DiffusionCacheConfig):
         super().__init__(config)
         self._registered = False
-        self._magcache_config: MagCacheConfig | None = None
-        self._transformer_id: int | None = None
+        self._dit_states: list[MagCacheState] = []
 
-    def enable(self, pipeline: Any) -> None:
-        """Enable MagCache on transformer using hooks.
-
-        This creates a MagCacheConfig from the backend's DiffusionCacheConfig
-        and applies the MagCache hook to the transformer.
-
-        Args:
-            pipeline: Diffusion pipeline instance. Extracts transformer and transformer_type:
-                     - transformer: pipeline.transformer
-                     - transformer_type: pipeline.transformer.__class__.__name__
-        """
-        transformer = pipeline.transformer
+    def _enable_one(self, transformer: nn.Module) -> MagCacheState:
+        """Enable MagCache on a single DiT and return its tracking state."""
         transformer_type = transformer.__class__.__name__
-
         num_inference_steps = self.config.num_inference_steps or 28
 
         mag_ratios = self.config.mag_ratios
@@ -104,7 +112,7 @@ class MagCacheBackend(CacheBackend):
                 f"For {transformer_type}, you need to provide mag_ratios or run in calibrate mode."
             )
 
-        self._magcache_config = MagCacheConfig(
+        config = MagCacheConfig(
             transformer_type=transformer_type,
             threshold=self.config.mag_threshold,
             max_skip_steps=self.config.mag_max_skip_steps,
@@ -113,43 +121,33 @@ class MagCacheBackend(CacheBackend):
             mag_calibrate=self.config.mag_calibrate,
             mag_ratios=mag_ratios if not self.config.mag_calibrate else None,
         )
-        self._transformer_id = id(transformer)
 
-        apply_mag_cache_hook(transformer, self._magcache_config, strategy=strategy)
+        apply_mag_cache_hook(transformer, config, strategy=strategy)
 
+        return MagCacheState(transformer_id=id(transformer), config=config)
+
+    def enable(self, pipeline: Any) -> None:
+        """Enable MagCache on all cacheable DiT modules.
+
+        Args:
+            pipeline: Diffusion pipeline instance.
+        """
+        dits = _discover_dits(pipeline)
+        self._dit_states = [self._enable_one(dit) for dit in dits]
         self._registered = True
         self.enabled = True
 
-    def refresh(self, pipeline: Any, num_inference_steps: int) -> None:
-        """Refresh MagCache state for new generation.
-
-        Clears all cached residuals and resets counters/accumulators.
-        Should be called before each generation to ensure clean state.
-
-        Args:
-            pipeline: Diffusion pipeline instance. Extracts transformer via pipeline.transformer.
-            num_inference_steps: Number of inference steps for the current generation.
-                                May be used for cache context updates.
-        """
-        transformer = pipeline.transformer
-        current_transformer_id = id(transformer)
-
-        needs_re_register = False
-
-        if self._registered and hasattr(self, "_transformer_id"):
-            if current_transformer_id != self._transformer_id:
-                logger.warning(
-                    f"Transformer was replaced (id changed from {self._transformer_id} "
-                    f"to {current_transformer_id}), re-registering hooks"
-                )
-                needs_re_register = True
-
-        if not self._registered or needs_re_register:
-            self.enable(pipeline)
-            return
+    def _refresh_one(self, transformer: nn.Module, state: MagCacheState) -> MagCacheState:
+        """Refresh MagCache state for a single DiT."""
+        current_id = id(transformer)
+        if current_id != state.transformer_id:
+            logger.warning(
+                f"Transformer was replaced (id changed from {state.transformer_id} "
+                f"to {current_id}), re-registering hooks"
+            )
+            return self._enable_one(transformer)
 
         blocks_with_hooks = []
-
         for name, submodule in transformer.named_children():
             if not isinstance(submodule, torch.nn.ModuleList):
                 continue
@@ -160,13 +158,28 @@ class MagCacheBackend(CacheBackend):
 
         if not blocks_with_hooks:
             logger.warning("No hooks found on transformer blocks, re-registering")
-            apply_mag_cache_hook(transformer, self._magcache_config)
-            self._transformer_id = current_transformer_id
+            apply_mag_cache_hook(transformer, state.config)
+            state.transformer_id = current_id
         else:
             for name, block, registry in blocks_with_hooks:
                 for hook in registry._hooks.values():
                     if hasattr(hook, "reset_state"):
                         hook.reset_state(block)
+        return state
+
+    def refresh(self, pipeline: Any, num_inference_steps: int) -> None:
+        """Refresh MagCache state for new generation.
+
+        Args:
+            pipeline: Diffusion pipeline instance.
+            num_inference_steps: Number of inference steps for the current generation.
+        """
+        if not self._registered:
+            self.enable(pipeline)
+            return
+
+        dits = _discover_dits(pipeline)
+        self._dit_states = [self._refresh_one(dit, state) for dit, state in zip(dits, self._dit_states)]
 
     def is_enabled(self) -> bool:
         """Check if MagCache is enabled.
