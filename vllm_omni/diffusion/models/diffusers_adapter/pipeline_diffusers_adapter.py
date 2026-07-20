@@ -19,8 +19,11 @@ import re
 from typing import Any, cast
 
 import torch
+from diffusers.models.attention import AttentionModuleMixin
+from diffusers.models.attention_processor import Attention
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from torch import nn
+from vllm.model_executor.layers.linear import QKVParallelLinear
 
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.models.diffusers_adapter.pipeline_utils import BasePipelineUtils, get_pipeline_utils
@@ -143,6 +146,9 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
                     f"Failed to enable VAE tiling for diffusers pipeline {self._pipeline.__class__.__name__}: {e}"
                 )
 
+        # Module-level fusions (QKV projection fusion, RMSNorm replacement)
+        self._apply_fusions()
+
         # Attention backend
         self._set_attention_backend()
 
@@ -252,6 +258,51 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
     # ------------------------------------------------------------------
     # Wrap settings, inputs, and outputs
     # ------------------------------------------------------------------
+
+    def _apply_fusions(self) -> None:
+        """Fuse Q/K/V projections into ``QKVParallelLinear`` for TP support.
+
+        Calls diffusers' ``fuse_qkv_projections()`` to concatenate weights,
+        then swaps each fused ``nn.Linear`` with ``QKVParallelLinear``
+        (sharing the same weight storage).
+        """
+        for name, component in self._pipeline.components.items():
+            if not hasattr(component, "fuse_qkv_projections"):
+                continue
+            try:
+                component.fuse_qkv_projections()
+            except Exception as e:
+                logger.debug("Skipping QKV fusion for %s: %s", name, e)
+                continue
+
+            fused = 0
+            for module in component.modules():
+                if not getattr(module, "fused_projections", False):
+                    continue
+                if isinstance(module, AttentionModuleMixin):
+                    head_dim = module.head_dim
+                elif isinstance(module, Attention):
+                    head_dim = module.inner_dim // module.heads
+                else:
+                    continue
+                for attr in ("to_qkv", "to_added_qkv"):
+                    linear = getattr(module, attr, None)
+                    if not isinstance(linear, nn.Linear):
+                        continue
+                    with torch.device("meta"):
+                        qkv = QKVParallelLinear(
+                            hidden_size=linear.in_features,
+                            head_size=head_dim,
+                            total_num_heads=linear.out_features // head_dim // 3,
+                            bias=linear.bias is not None,
+                            return_bias=False,
+                        )
+                    qkv.weight = linear.weight
+                    if linear.bias is not None:
+                        qkv.bias = linear.bias
+                    setattr(module, attr, qkv)
+                    fused += 1
+            logger.info("Fused %d QKV projection(s) in %s using QKVParallelLinear.", fused, name)
 
     def _set_attention_backend(self) -> None:
         """Set the attention backend.
