@@ -26,6 +26,7 @@ import numpy as np
 import vllm.envs as envs
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.sse import EventSourceResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 from starlette.datastructures import State
@@ -1231,7 +1232,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                             headers=metrics_header(metrics_header_format),
                         )
 
-    return StreamingResponse(content=generator, media_type="text/event-stream")
+    return EventSourceResponse(content=generator)
 
 
 _remove_route_from_router(router, "/v1/audio/speech", {"POST"})
@@ -2286,10 +2287,7 @@ async def edit_images(
                 raw_request=raw_request,
             )
             if stream and not isinstance(generation_result, ErrorResponse):
-                return StreamingResponse(
-                    content=generation_result,
-                    media_type="text/event-stream",
-                )
+                return EventSourceResponse(content=generation_result)
             if isinstance(generation_result, ErrorResponse):
                 raise HTTPException(
                     status_code=generation_result.error.code if generation_result.error else 400,
