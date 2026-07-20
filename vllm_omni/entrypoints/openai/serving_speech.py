@@ -46,6 +46,11 @@ from vllm_omni.entrypoints.openai.protocol.audio import (
     SpeechInputTokenDetails,
     SpeechTokenUsage,
 )
+from vllm_omni.entrypoints.openai.protocol.openai_speech import (
+    SpeechAudioDeltaEvent,
+    SpeechAudioDoneEvent,
+    SpeechAudioErrorEvent,
+)
 from vllm_omni.entrypoints.openai.speech_usage import (
     SpeechOutputTokenCounter,
     build_speech_usage,
@@ -2888,34 +2893,29 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
                 request_start_s=request_start_s,
                 usage_acc=usage_acc,
             ):
-                payload = {
-                    "type": "speech.audio.delta",
-                    "audio": base64.b64encode(chunk).decode("ascii"),
-                    "response_format": response_format,
-                }
-                data = json.dumps(payload, separators=(",", ":"))
-                yield f"event: speech.audio.delta\ndata: {data}\n\n"
-            done_payload: dict[str, Any] = {"type": "speech.audio.done"}
+                event = SpeechAudioDeltaEvent(
+                    audio=base64.b64encode(chunk).decode("ascii"),
+                    response_format=response_format,
+                )
+                yield f"event: speech.audio.delta\ndata: {event.model_dump_json(exclude_none=True)}\n\n"
+            done_event = SpeechAudioDoneEvent()
             if request is not None:
                 # Streaming path: output_tokens = sum of stage-0 deltas.
                 usage = self._build_speech_usage(request, tts_params or {}, usage_acc.total())
-                done_payload["usage"] = usage.model_dump()
-            done = json.dumps(done_payload, separators=(",", ":"))
-            yield f"event: speech.audio.done\ndata: {done}\n\n"
+                done_event.usage = usage.model_dump()
+            yield f"event: speech.audio.done\ndata: {done_event.model_dump_json(exclude_none=True)}\n\n"
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            payload = {
-                "type": "speech.audio.error",
-                "error": {
+            event = SpeechAudioErrorEvent(
+                error={
                     "message": str(e),
                     "type": "server_error",
                     "param": None,
                     "code": HTTPStatus.INTERNAL_SERVER_ERROR.value,
-                },
-            }
-            data = json.dumps(payload, separators=(",", ":"))
-            yield f"event: speech.audio.error\ndata: {data}\n\n"
+                }
+            )
+            yield f"event: speech.audio.error\ndata: {event.model_dump_json()}\n\n"
 
     @staticmethod
     def _extract_audio_output(res) -> tuple[dict | None, str | None]:

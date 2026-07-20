@@ -2,7 +2,11 @@ import math
 from typing import Any, Literal
 
 import numpy as np
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from vllm_omni.entrypoints.openai.protocol.openai_speech import (
+    CreateSpeechRequest,
+)
 
 _MAX_EMBEDDING_DIM = 8192
 
@@ -48,27 +52,25 @@ def _normalize_speaker_embedding_value(value):
     return [float(x) for x in value]
 
 
-class OpenAICreateSpeechRequest(BaseModel):
-    input: str
+class OpenAICreateSpeechRequest(CreateSpeechRequest):
+    # Override the base model config to accept vllm-omni extension fields.
+    # The generated base uses the spec's additionalProperties: false; we
+    # relax that so our extension fields are not rejected.
+    model_config = ConfigDict(extra="ignore")
+
+    # Override base fields whose defaults or optionality differ from the
+    # OpenAI spec.  The base class defines these as required; we make them
+    # optional because the vllm-omni server provides defaults.
     model: str | None = None
     # Accept both "voice" (OpenAI convention) and "speaker" (model/internal
-    # convention) as input keys.  Intentionally global — all TTS backends
+    # convention) as input keys.  Intentionally global -- all TTS backends
     # (Qwen3-TTS, Voxtral, Fish Speech) use this field for the speaker name.
     voice: str | None = Field(
         default=None,
         validation_alias=AliasChoices("voice", "speaker"),
         description="Speaker/voice to use. For Qwen3-TTS: vivian, ryan, aiden, etc.",
     )
-    instructions: str | None = Field(
-        default=None,
-        description="Instructions for voice style/emotion (maps to 'instruct' for Qwen3-TTS)",
-    )
     response_format: Literal["wav", "pcm", "flac", "mp3", "opus"] = DEFAULT_AUDIO_FORMAT
-    speed: float | None = Field(
-        default=1.0,
-        ge=0.25,
-        le=4.0,
-    )
     stream_format: Literal["sse", "audio"] | None = Field(
         default=None,
         description=(
@@ -77,6 +79,8 @@ class OpenAICreateSpeechRequest(BaseModel):
             "selects SSE and stream=false remains non-streaming."
         ),
     )
+
+    # vllm-omni extension: explicit streaming toggle (not in OpenAI spec).
     stream: bool = Field(
         default=False,
         description=(
