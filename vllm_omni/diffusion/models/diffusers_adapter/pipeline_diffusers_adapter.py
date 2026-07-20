@@ -152,6 +152,9 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
         # Attention backend
         self._set_attention_backend()
 
+        # Cache acceleration
+        self._enable_cache()
+
     # ------------------------------------------------------------------
     # Step-wise execution — explicitly rejected
     # ------------------------------------------------------------------
@@ -211,11 +214,10 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
                 "Sequence parallel is not supported with the diffusers backend. "
                 "It requires model-specific attention surgery."
             )
-        if self.od_config.cache_backend not in ("none", None):
+        if self.od_config.cache_backend not in ("none", None, "cache_dit"):
             raise NotImplementedError(
                 f"Cache backend '{self.od_config.cache_backend}' is not supported "
-                "with the diffusers backend. TeaCache/Cache-DiT require hooking "
-                "into individual transformer blocks."
+                "with the diffusers backend. Only 'cache_dit' is supported."
             )
         if self.od_config.enforce_eager:
             raise NotImplementedError(
@@ -303,6 +305,24 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
                     setattr(module, attr, qkv)
                     fused += 1
             logger.info("Fused %d QKV projection(s) in %s using QKVParallelLinear.", fused, name)
+
+    def _enable_cache(self) -> None:
+        """Enable cache-dit acceleration if configured."""
+        if self.od_config.cache_backend != "cache_dit":
+            return
+
+        try:
+            import cache_dit
+        except ImportError:
+            raise ImportError(
+                "cache-dit is required for --cache-backend cache_dit. Install it with: pip install cache-dit"
+            )
+
+        try:
+            cache_dit.enable_cache(self._pipeline)
+            logger.info("Enabled cache-dit acceleration for %s.", self._pipeline.__class__.__name__)
+        except Exception as e:
+            logger.warning("Failed to enable cache-dit: %s", e)
 
     def _set_attention_backend(self) -> None:
         """Set the attention backend.
