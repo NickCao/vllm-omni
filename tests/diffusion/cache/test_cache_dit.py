@@ -94,16 +94,19 @@ def test_wan22_custom_enabler_passes_taylorseer_calibrator(
         assert modifier._context_kwargs["calibrator_config"] is calibrator_config
 
 
+@patch("vllm_omni.diffusion.cache.cache_dit_backend.discover_dit_modules")
 @patch("vllm_omni.diffusion.cache.cache_dit_backend.BlockAdapter")
 @patch("vllm_omni.diffusion.cache.cache_dit_backend.cache_dit")
-def test_cosmos3_cache_dit_wraps_gen_layers(mock_cache_dit, mock_block_adapter):
-    """Cosmos3 should cache only the repeated GEN pathway blocks."""
+def test_cosmos3_cache_dit_wraps_gen_layers(mock_cache_dit, mock_block_adapter, mock_discover):
+    """Cosmos3 should cache only the repeated GEN pathway blocks via the generic path."""
     mock_pipeline = Mock()
     gen_layers = object()
     mock_pipeline.transformer.gen_layers = gen_layers
     mock_pipeline.transformer._cache_dit_adapter_config = Cosmos3VFMTransformer._cache_dit_adapter_config
+    mock_discover.return_value = [mock_pipeline.transformer]
 
-    cd_backend.enable_cache_for_cosmos3(mock_pipeline, SAMPLE_CACHE_CONFIG)
+    backend = CacheDiTBackend(SAMPLE_CACHE_CONFIG)
+    backend.enable(mock_pipeline)
 
     mock_cache_dit.enable_cache.assert_called_once()
     adapter_kwargs = mock_block_adapter.call_args.kwargs
@@ -111,6 +114,7 @@ def test_cosmos3_cache_dit_wraps_gen_layers(mock_cache_dit, mock_block_adapter):
     assert adapter_kwargs["blocks"] == [gen_layers]
     assert adapter_kwargs["has_separate_cfg"] is True
     assert adapter_kwargs["check_forward_pattern"] is False
+    assert mock_pipeline._cache_dit_requires_paired_cfg is True
 
 
 # This test is skipped on ROCm since rocm_unquantized_gemm doesn't support CPU backend

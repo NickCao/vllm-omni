@@ -994,6 +994,13 @@ class Cosmos3VFMTransformer(nn.Module):
         },
         has_separate_cfg=True,
         check_forward_pattern=False,
+        # The T2I denoising loop skips the unconditional forward outside
+        # the guidance interval as a speed optimization.  cache-dit
+        # distinguishes cond/uncond passes by transformer-forward parity,
+        # so skipping would desync its step accounting.  This flag tells
+        # the pipeline to keep both passes and neutralize CFG via
+        # scale=1.0 instead.
+        requires_paired_cfg=True,
     )
 
     _repeated_blocks = ["Cosmos3GenDecoderLayer"]

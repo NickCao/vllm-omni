@@ -33,6 +33,7 @@ from vllm.logger import init_logger
 
 from vllm_omni.diffusion.cache.base import CacheBackend
 from vllm_omni.diffusion.data import DiffusionCacheConfig, OmniDiffusionConfig
+from vllm_omni.diffusion.offloader.module_collector import ModuleDiscovery
 
 logger = init_logger(__name__)
 
@@ -50,6 +51,7 @@ class CacheDiTAdapterConfig:
     has_separate_cfg: bool = False
     cached_adapter_cls: type[CachedAdapter] | None = None
     check_forward_pattern: bool = True
+    requires_paired_cfg: bool = False
 
 
 # Registry of custom cache-dit enablers for specific models
@@ -57,23 +59,51 @@ class CacheDiTAdapterConfig:
 CUSTOM_DIT_ENABLERS: dict[str, Callable] = {}
 
 
-# Small helper to centralize cache-dit summaries.
+def discover_dit_modules(pipeline: Any) -> list[Any]:
+    """Return DiT modules from the pipeline via ModuleDiscovery."""
+    modules = ModuleDiscovery.discover(pipeline)
+    return modules.dits
+
+
+def get_cacheable_dits(pipeline: Any) -> list[Any]:
+    """Return DiT modules that carry ``_cache_dit_adapter_config``.
+
+    Uses ModuleDiscovery to locate all DiT modules, then filters to
+    those that declare cache-dit support.  Falls back to all discovered
+    DiTs if none carry the config (for pipelines that rely on the
+    generic ``enable_cache`` path without an adapter config).
+    """
+    dits = discover_dit_modules(pipeline)
+    if not dits:
+        raise AttributeError(
+            f"{type(pipeline).__name__} has no discoverable DiT modules. "
+            "Implement SupportsComponentDiscovery or add a well-known "
+            "DiT attribute (e.g. 'transformer')."
+        )
+    with_config = [d for d in dits if getattr(d, "_cache_dit_adapter_config", None) is not None]
+    return with_config if with_config else dits
+
+
+def get_pipeline_transformer(pipeline: Any) -> Any:
+    """Return the first cacheable DiT module.
+
+    Convenience wrapper for call sites that operate on a single DiT.
+    """
+    return get_cacheable_dits(pipeline)[0]
+
+
 def cache_summary(pipeline: Any, details: bool = True) -> None:
-    if hasattr(pipeline, "transformer"):
-        cache_dit.summary(pipeline.transformer, details=details)
-    if hasattr(pipeline, "transformer_2"):
-        cache_dit.summary(pipeline.transformer_2, details=details)
-    if not hasattr(pipeline, "transformer") and not hasattr(pipeline, "transformer_2"):
-        logger.warning("CacheDiT summary failed; this pipeline has no defined transformer attribute")
-
-
-def default_get_pipeline_transformer(pipeline: Any) -> Any:
-    return pipeline.transformer
+    dits = discover_dit_modules(pipeline)
+    if not dits:
+        logger.warning("CacheDiT summary failed; no DiT modules discovered")
+        return
+    for dit in dits:
+        cache_dit.summary(dit, details=details)
 
 
 def build_cache_context_refresh(
     cache_config: DiffusionCacheConfig,
-    get_pipeline_transformer: Callable[[Any], Any] = default_get_pipeline_transformer,
+    get_pipeline_transformer: Callable[[Any], Any] = get_pipeline_transformer,
 ) -> RefreshCacheContextFunc:
     """Build the cache context refresh func for a single Transformer."""
 
@@ -174,7 +204,7 @@ def enable_cache_for_dit(
     )
 
     # Enable cache-dit on the transformer
-    transformer = default_get_pipeline_transformer(pipeline)
+    transformer = get_pipeline_transformer(pipeline)
 
     # If we have a custom cached adapter subclass, call apply directly
     if adapter_cls is not None:
@@ -949,32 +979,6 @@ class SensenovaCachedAdapter(CachedAdapter):
         return total_cached_blocks
 
 
-def enable_cache_for_cosmos3(pipeline: Any, cache_config: Any) -> RefreshCacheContextFunc:
-    """Enable cache-dit for Cosmos3.
-
-    Cosmos3 has a dual-pathway architecture (UND + GEN) but only the GEN
-    pathway (``gen_layers``) runs at every denoising step.  The UND pathway
-    computes once and its K/V are cached by the pipeline itself; no cache-dit
-    needed there.  We wrap only ``gen_layers`` via ``BlockAdapter``.
-
-    Args:
-        pipeline: The Cosmos3 pipeline instance.
-        cache_config: DiffusionCacheConfig instance with cache configuration.
-
-    Returns:
-        A refresh function that can be called to update cache context with new num_inference_steps.
-    """
-    # The T2I denoising loop skips the unconditional forward outside the
-    # guidance interval as a speed optimization. cache-dit distinguishes the
-    # conditional vs unconditional passes purely by transformer-forward parity
-    # (has_separate_cfg=True above), so that skip would desync its per-generation
-    # step accounting. Still do both cond/uncond CFG steps when cache-dit is active.
-    # CFG is instead neutralized via scale=1.0 outside the interval.
-    pipeline._cache_dit_requires_paired_cfg = True
-    block_adapter = CacheDiTBackend.maybe_build_block_adapter(pipeline)
-    return enable_cache_for_dit(pipeline, cache_config, block_adapter)
-
-
 def enable_cache_for_krea2(pipeline: Any, cache_config: Any) -> RefreshCacheContextFunc:
     """Enable cache-dit for Krea 2.
 
@@ -996,7 +1000,7 @@ def enable_cache_for_krea2(pipeline: Any, cache_config: Any) -> RefreshCacheCont
     Returns:
         A refresh function that can be called to update cache context with new num_inference_steps.
     """
-    transformer = default_get_pipeline_transformer(pipeline)
+    transformer = get_pipeline_transformer(pipeline)
     block_adapter = BlockAdapter(
         transformer=transformer,
         blocks=[transformer.transformer_blocks],
@@ -1015,8 +1019,6 @@ CUSTOM_DIT_ENABLERS.update(
         "Wan22TI2VPipeline": enable_cache_for_wan22,
         "Wan22VACEPipeline": enable_cache_for_wan22,
         "Wan22S2VPipeline": enable_cache_for_wan22_s2v,
-        "Cosmos3OmniDiffusersPipeline": enable_cache_for_cosmos3,
-        "Cosmos3OmniPipeline": enable_cache_for_cosmos3,
         "Krea2Pipeline": enable_cache_for_krea2,
     }
 )
@@ -1064,7 +1066,7 @@ class CacheDiTBackend(CacheBackend):
         """If a module defines `_cache_dit_adapter_config`, build the corresponding
         block adapter.
         """
-        transformer = default_get_pipeline_transformer(pipeline)
+        transformer = get_pipeline_transformer(pipeline)
 
         adapter_cfg: CacheDiTAdapterConfig | None = getattr(transformer, "_cache_dit_adapter_config", None)
         if adapter_cfg is None:
@@ -1086,12 +1088,15 @@ class CacheDiTBackend(CacheBackend):
         return block_adapter
 
     @staticmethod
+    def _get_adapter_config(pipeline) -> CacheDiTAdapterConfig | None:
+        transformer = get_pipeline_transformer(pipeline)
+        return getattr(transformer, "_cache_dit_adapter_config", None)
+
+    @staticmethod
     def maybe_get_cached_adapter_cls(pipeline) -> type[CachedAdapter] | None:
         """If a module has a custom cached adapter type registered, e.g., SenseNova, retrieve it
         from the transformer's CacheDiTAdapterConfig."""
-        transformer = default_get_pipeline_transformer(pipeline)
-
-        adapter_cfg: CacheDiTAdapterConfig | None = getattr(transformer, "_cache_dit_adapter_config", None)
+        adapter_cfg = CacheDiTBackend._get_adapter_config(pipeline)
         if adapter_cfg is None:
             return None
         return adapter_cfg.cached_adapter_cls
@@ -1119,6 +1124,11 @@ class CacheDiTBackend(CacheBackend):
             # create its block adapter.
             block_adapter = self.maybe_build_block_adapter(pipeline)
             adapter_cls = self.maybe_get_cached_adapter_cls(pipeline)
+
+            adapter_cfg = self._get_adapter_config(pipeline)
+            if adapter_cfg is not None and adapter_cfg.requires_paired_cfg:
+                pipeline._cache_dit_requires_paired_cfg = True
+
             self._refresh_func = enable_cache_for_dit(pipeline, self.config, block_adapter, adapter_cls)
 
         self.enabled = True

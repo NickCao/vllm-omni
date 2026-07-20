@@ -1951,7 +1951,7 @@ def test_diffuse_keeps_paired_cfg_when_cache_dit_active(make_cosmos3_pipeline) -
     the same inputs skip the out-of-interval uncond pass: calls == [2, 1, 2].
     """
     pipeline = make_cosmos3_pipeline()
-    # Marker normally set by ``enable_cache_for_cosmos3`` when cache-dit is on.
+    # Marker set by CacheDiTBackend when requires_paired_cfg=True.
     pipeline._cache_dit_requires_paired_cfg = True
     latents = torch.zeros(1, 2, 1, 1, 1)
 

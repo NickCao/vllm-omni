@@ -978,10 +978,10 @@ class Cosmos3OmniDiffusersPipeline(
         self._cosmos3_branch_caches: dict[str, tuple[Any, Any]] | None = None
         self._robolab_transform = None
 
-        # Set True by ``enable_cache_for_cosmos3`` when cache-dit is enabled on
-        # this pipeline. Tells the sequential-CFG loop to keep paired
-        # cond/uncond forwards so cache-dit's has_separate_cfg step accounting
-        # stays in sync.
+        # Set True by CacheDiTBackend when the transformer's adapter config
+        # has requires_paired_cfg=True.  Tells the sequential-CFG loop to
+        # keep paired cond/uncond forwards so cache-dit's has_separate_cfg
+        # step accounting stays in sync.
         self._cache_dit_requires_paired_cfg = False
 
         self.setup_diffusion_pipeline_profiler(
@@ -1257,9 +1257,10 @@ class Cosmos3OmniDiffusersPipeline(
         parity of its transformer-forward counter.  The T2I ``guidance_interval``
         optimization that skips the uncond pass outside the interval would
         desync that accounting (cond passes get mislabeled as uncond and the
-        per-generation step counter drifts).  ``enable_cache_for_cosmos3`` sets
-        the marker below when it enables cache-dit on this pipeline; the loop
-        then keeps both passes and neutralizes CFG via scale=1.0 instead.
+        per-generation step counter drifts).  CacheDiTBackend sets the marker
+        below when the transformer's adapter config has
+        ``requires_paired_cfg=True``; the loop then keeps both passes and
+        neutralizes CFG via scale=1.0 instead.
 
         Returns False when cache-dit is not active, preserving the skip speedup.
         """
