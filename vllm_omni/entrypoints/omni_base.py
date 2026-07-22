@@ -262,9 +262,27 @@ class OmniBase(PDDisaggregationMixin):
     def check_health(self) -> None:
         if not self.engine.is_alive():
             raise EngineDeadError("Orchestrator process is not alive")
-        for stage_client in self.engine.stage_clients:
-            if hasattr(stage_client, "check_health"):
-                stage_client.check_health()
+        for pool in self.engine.stage_pools:
+            live_clients = [client for client in pool.clients if client is not None]
+            if not live_clients:
+                raise OmniEngineDeadError(f"Stage {pool.stage_id} has no live replicas", error_stage_id=pool.stage_id)
+            # A pool is healthy as long as one replica is; break on the first
+            # healthy replica instead of just checking the first slot, so a
+            # dead replica ahead of a healthy survivor doesn't fail readiness.
+            # The `else` only runs if every replica raised.
+            last_error: EngineDeadError | None = None
+            for client in live_clients:
+                try:
+                    if hasattr(client, "check_health"):
+                        client.check_health()
+                    break
+                except EngineDeadError as exc:
+                    last_error = exc
+            else:
+                raise OmniEngineDeadError(
+                    f"Stage {pool.stage_id} has no healthy replicas: {last_error}",
+                    error_stage_id=pool.stage_id,
+                )
 
     def resolve_sampling_params_list(
         self,

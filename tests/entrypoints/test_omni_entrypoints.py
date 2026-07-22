@@ -1065,12 +1065,19 @@ async def test_async_omni_propagates_engine_generate_error(monkeypatch: pytest.M
 # ───────── OmniBase.check_health() aggregation ─────────
 
 
+def _mock_pool(stage_id: int, clients):
+    pool = MagicMock()
+    pool.stage_id = stage_id
+    pool.clients = clients if isinstance(clients, list) else [clients]
+    return pool
+
+
 def test_check_health_passes_when_all_healthy():
     base = _make_base()
     healthy_stage = MagicMock()
     healthy_stage.check_health = MagicMock()
     base.engine.is_alive.return_value = True
-    base.engine.stage_clients = [healthy_stage]
+    base.engine.stage_pools = [_mock_pool(0, healthy_stage)]
     base.check_health()  # should not raise
 
 
@@ -1079,16 +1086,59 @@ def test_check_health_raises_when_stage_dead():
     dead_stage = MagicMock()
     dead_stage.check_health = MagicMock(side_effect=EngineDeadError("Stage-1 dead"))
     base.engine.is_alive.return_value = True
-    base.engine.stage_clients = [dead_stage]
+    base.engine.stage_pools = [_mock_pool(1, dead_stage)]
     with pytest.raises(EngineDeadError, match="Stage-1 dead"):
+        base.check_health()
+
+
+def test_check_health_passes_when_dead_replica_precedes_survivor():
+    """A dead replica ahead of a healthy one must not fail the pool."""
+    base = _make_base()
+    dead_replica = MagicMock()
+    dead_replica.check_health = MagicMock(side_effect=EngineDeadError("replica-0 dead"))
+    healthy_replica = MagicMock()
+    healthy_replica.check_health = MagicMock()
+    base.engine.is_alive.return_value = True
+    base.engine.stage_pools = [_mock_pool(0, [dead_replica, healthy_replica])]
+    base.check_health()  # should not raise
+
+
+def test_check_health_passes_when_survivor_precedes_dead_replica():
+    base = _make_base()
+    healthy_replica = MagicMock()
+    healthy_replica.check_health = MagicMock()
+    dead_replica = MagicMock()
+    dead_replica.check_health = MagicMock(side_effect=EngineDeadError("replica-1 dead"))
+    base.engine.is_alive.return_value = True
+    base.engine.stage_pools = [_mock_pool(0, [healthy_replica, dead_replica])]
+    base.check_health()  # should not raise
+
+
+def test_check_health_raises_when_all_replicas_dead():
+    base = _make_base()
+    dead_replica_0 = MagicMock()
+    dead_replica_0.check_health = MagicMock(side_effect=EngineDeadError("replica-0 dead"))
+    dead_replica_1 = MagicMock()
+    dead_replica_1.check_health = MagicMock(side_effect=EngineDeadError("replica-1 dead"))
+    base.engine.is_alive.return_value = True
+    base.engine.stage_pools = [_mock_pool(2, [dead_replica_0, dead_replica_1])]
+    with pytest.raises(OmniEngineDeadError, match="Stage 2 has no healthy replicas"):
         base.check_health()
 
 
 def test_check_health_raises_when_orchestrator_dead():
     base = _make_base()
     base.engine.is_alive.return_value = False
-    base.engine.stage_clients = []
+    base.engine.stage_pools = []
     with pytest.raises(EngineDeadError, match="not alive"):
+        base.check_health()
+
+
+def test_check_health_raises_when_stage_pool_empty():
+    base = _make_base()
+    base.engine.is_alive.return_value = True
+    base.engine.stage_pools = [_mock_pool(0, MagicMock()), _mock_pool(1, None)]
+    with pytest.raises(OmniEngineDeadError, match="Stage 1 has no live replicas"):
         base.check_health()
 
 
