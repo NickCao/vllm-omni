@@ -741,6 +741,7 @@ class DistStageRuntime(StageRuntime):
         async_chunk: bool,
         tokenizer: str | None = None,
         single_stage_id_filter: int | None,
+        head_only: bool = False,
         omni_master_address: str,
         omni_master_port: int,
         omni_dp_size_local: int = 1,
@@ -758,6 +759,9 @@ class DistStageRuntime(StageRuntime):
             tokenizer=tokenizer,
         )
         self._single_stage_id_filter = single_stage_id_filter
+        # --head mode: no stage is local, regardless of _single_stage_id_filter
+        # (which stays None here, same as the legacy "no filter" case below).
+        self._head_only = head_only
         self._omni_master_address = omni_master_address
         self._omni_master_port = omni_master_port
         self._omni_heartbeat_timeout = omni_heartbeat_timeout
@@ -838,6 +842,8 @@ class DistStageRuntime(StageRuntime):
     # ---- Distributed overrides ----
 
     def _get_launch_mode(self, stage_id: int) -> str:
+        if self._head_only:
+            return "remote"
         if self._single_stage_id_filter is not None and stage_id != self._single_stage_id_filter:
             return "remote"
         return "local"
@@ -1078,6 +1084,7 @@ def create_stage_runtime(
     tokenizer: str | None = None,
     # Distributed-only params:
     single_stage_id_filter: int | None = None,
+    head_only: bool = False,
     omni_master_address: str | None = None,
     omni_master_port: int | None = None,
     omni_dp_size_local: int = 1,
@@ -1098,6 +1105,7 @@ def create_stage_runtime(
             async_chunk=async_chunk,
             tokenizer=tokenizer,
             single_stage_id_filter=single_stage_id_filter,
+            head_only=head_only,
             omni_master_address=omni_master_address,
             omni_master_port=omni_master_port,
             omni_dp_size_local=omni_dp_size_local,

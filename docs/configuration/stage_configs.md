@@ -119,6 +119,32 @@ CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct --omni \
     --omni-master-port 26000
 ```
 
+#### Running the API server on its own (`--head`)
+
+By default the process hosting the API server also runs one stage locally
+(conventionally stage 0, via `--stage-id 0` above). `--head` removes that
+requirement: the process runs only the orchestrator and API server, with
+**every** stage, including stage 0, launched elsewhere via `--headless`. This
+puts the API-server process on a machine with no GPU at all. Stage 0 is then
+launched exactly like a Worker Stage above (`--stage-id 0 --headless`); only
+the head invocation itself changes. `--head` requires
+`--omni-master-address` / `--omni-master-port` (same as `--stage-id`) and is
+mutually exclusive with both `--stage-id` and `--headless`:
+
+```bash
+vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct --omni \
+    --port 8091 \
+    --head \
+    --omni-master-address 127.0.0.1 \
+    --omni-master-port 26000
+
+CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct --omni \
+    --stage-id 0 \
+    --headless \
+    --omni-master-address 127.0.0.1 \
+    --omni-master-port 26000
+```
+
 When instantiating a custom deployment YAML conforming to the updated schema, append the `--deploy-config /path/to/override.yaml` directive
 to all node invocations. For legacy architectures (e.g., BAGEL) configured via deprecated `stage_args:` schemas, continue to specify the relevant configuration via `--stage-configs-path /path/to/config.yaml`.
 

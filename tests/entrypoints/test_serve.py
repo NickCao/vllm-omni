@@ -46,6 +46,115 @@ def test_serve_parser_accepts_strategy_config() -> None:
     assert args.get_explicit_kwargs_dict()["strategy_config"] == "/tmp/strategy.yaml"
 
 
+def _parse_serve_args(argv: list[str]) -> TrackingNamespace:
+    parser = TrackingArgumentParser()
+    subparsers = parser.add_subparsers(dest="subcommand")
+    OmniServeCommand().subparser_init(subparsers)
+    return parser.parse_args(argv)
+
+
+def test_head_flag_parses_and_forwarded_as_explicit_kwarg() -> None:
+    args = _parse_serve_args(
+        [
+            "serve",
+            "fake-model",
+            "--omni",
+            "--head",
+            "--omni-master-address",
+            "127.0.0.1",
+            "--omni-master-port",
+            "26000",
+        ]
+    )
+    assert args.head is True
+    assert args.get_explicit_kwargs_dict()["head"] is True
+
+
+def test_head_requires_master_address_and_port() -> None:
+    cmd = OmniServeCommand()
+    args = _parse_serve_args(["serve", "fake-model", "--omni", "--head"])
+    with pytest.raises(ValueError, match="--head requires both --omni-master-address and --omni-master-port"):
+        cmd.validate(args)
+
+
+def test_head_rejects_stage_id() -> None:
+    cmd = OmniServeCommand()
+    args = _parse_serve_args(
+        [
+            "serve",
+            "fake-model",
+            "--omni",
+            "--head",
+            "--stage-id",
+            "0",
+            "--omni-master-address",
+            "127.0.0.1",
+            "--omni-master-port",
+            "26000",
+        ]
+    )
+    with pytest.raises(ValueError, match="--head cannot be combined with --stage-id"):
+        cmd.validate(args)
+
+
+def test_head_rejects_headless() -> None:
+    cmd = OmniServeCommand()
+    args = _parse_serve_args(
+        [
+            "serve",
+            "fake-model",
+            "--omni",
+            "--head",
+            "--headless",
+            "--omni-master-address",
+            "127.0.0.1",
+            "--omni-master-port",
+            "26000",
+        ]
+    )
+    with pytest.raises(ValueError, match="--head cannot be combined with --headless"):
+        cmd.validate(args)
+
+
+def test_head_rejects_omni_dp_size_local_override() -> None:
+    cmd = OmniServeCommand()
+    args = _parse_serve_args(
+        [
+            "serve",
+            "fake-model",
+            "--omni",
+            "--head",
+            "--omni-master-address",
+            "127.0.0.1",
+            "--omni-master-port",
+            "26000",
+            "--omni-dp-size-local",
+            "2",
+        ]
+    )
+    with pytest.raises(ValueError, match="there is no local stage to size under --head"):
+        cmd.validate(args)
+
+
+def test_head_passes_validation_with_master_address_and_port(mocker: MockerFixture) -> None:
+    mocker.patch("vllm_omni.entrypoints.cli.serve.validate_parsed_serve_args")
+    mocker.patch("vllm_omni.diffusion.utils.hf_utils.is_diffusion_model", return_value=False)
+    cmd = OmniServeCommand()
+    args = _parse_serve_args(
+        [
+            "serve",
+            "fake-model",
+            "--omni",
+            "--head",
+            "--omni-master-address",
+            "127.0.0.1",
+            "--omni-master-port",
+            "26000",
+        ]
+    )
+    cmd.validate(args)
+
+
 def _make_headless_args(**kwargs) -> TrackingNamespace:
     defaults = {
         "model": "fake-model",

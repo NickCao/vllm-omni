@@ -407,6 +407,27 @@ class TestSingleStageModeDetection:
         assert engine.single_stage_mode is True
         assert engine._single_stage_id_filter is None
 
+    def test_head_kwarg_promotes_to_single_stage_mode_with_no_filter(self, mocker: MockerFixture):
+        engine = self._make_engine_no_thread(
+            mocker,
+            head=True,
+            omni_master_address="127.0.0.1",
+            omni_master_port=20004,
+        )
+        assert engine.single_stage_mode is True
+        assert engine._head_only is True
+        assert engine._single_stage_id_filter is None
+
+    def test_head_kwarg_conflicts_with_stage_id_kwarg(self, mocker: MockerFixture):
+        with pytest.raises(ValueError, match="cannot be combined with"):
+            self._make_engine_no_thread(
+                mocker,
+                head=True,
+                stage_id=0,
+                omni_master_address="127.0.0.1",
+                omni_master_port=20005,
+            )
+
     def test_master_address_and_port_stored(self, mocker: MockerFixture):
         engine = self._make_engine_no_thread(
             mocker,
@@ -428,7 +449,13 @@ class TestSingleStageModeDetection:
 
 
 class TestSingleStageInitialization:
-    def _build_runtime(self, stage_cfgs: list[Any], *, stage_id_filter: int | None) -> DistStageRuntime:
+    def _build_runtime(
+        self,
+        stage_cfgs: list[Any],
+        *,
+        stage_id_filter: int | None,
+        head_only: bool = False,
+    ) -> DistStageRuntime:
         return DistStageRuntime(
             stage_configs=stage_cfgs,
             model="fake-model",
@@ -437,9 +464,47 @@ class TestSingleStageInitialization:
             diffusion_batch_size=2,
             async_chunk=False,
             single_stage_id_filter=stage_id_filter,
+            head_only=head_only,
             omni_master_address="127.0.0.1",
             omni_master_port=26000,
         )
+
+    def test_get_launch_mode_is_remote_for_every_stage_under_head(self):
+        """--head means no stage is local, regardless of stage id."""
+        runtime = self._build_runtime([], stage_id_filter=None, head_only=True)
+        assert runtime._get_launch_mode(0) == "remote"
+        assert runtime._get_launch_mode(1) == "remote"
+        assert runtime._get_launch_mode(5) == "remote"
+
+    def test_build_logical_stage_init_plans_marks_all_stages_remote_under_head(self, mocker: MockerFixture):
+        import vllm_omni.engine.stage_runtime as runtime_mod
+
+        stage_cfgs = [_make_stage_cfg(0), _make_stage_cfg(1)]
+        runtime = self._build_runtime(stage_cfgs, stage_id_filter=None, head_only=True)
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(
+            runtime_mod,
+            "extract_stage_metadata",
+            lambda cfg: SimpleNamespace(
+                stage_id=cfg.stage_id,
+                stage_type=getattr(cfg, "stage_type", "llm"),
+                prompt_expand_func=None,
+                runtime_cfg={},
+            ),
+        )
+        monkeypatch.setattr(runtime_mod, "get_stage_connector_spec", lambda **_: {})
+        monkeypatch.setattr(runtime_mod, "resolve_omni_kv_config_for_stage", lambda *_: (None, None, None))
+        monkeypatch.setattr(runtime_mod, "build_engine_args_dict", lambda *_, **__: {})
+        monkeypatch.setattr(runtime_mod, "build_vllm_config", lambda *_, **__: (SimpleNamespace(), object))
+        try:
+            stage_plans = runtime._build_logical_stage_init_plans(None, [1, 1], {})
+        finally:
+            monkeypatch.undo()
+
+        # stage 0 is remote here too -- under --head there is no locally
+        # hosted stage at all, unlike the colocated (stage_id_filter=0) case.
+        assert [plan.replicas[0].launch_mode for plan in stage_plans] == ["remote", "remote"]
 
     def test_build_logical_stage_init_plans_marks_non_matching_stage_remote(self, mocker: MockerFixture):
         import vllm_omni.engine.stage_runtime as runtime_mod
@@ -521,6 +586,32 @@ class TestSingleStageInitialization:
         # NOT appear in the head-owned set — that slot is for the headless
         # to fill via auto-assign.
         assert call_kwargs["head_local_replicas"] == {0: [0]}
+        mock_oms.start.assert_called_once()
+
+    def test_start_omni_master_server_head_local_replicas_empty_under_head(self, mocker: MockerFixture):
+        import vllm_omni.engine.stage_runtime as runtime_mod
+        from vllm_omni.distributed import omni_coordinator as omni_coord_mod
+
+        runtime = self._build_runtime([], stage_id_filter=None, head_only=True)
+        mock_oms = mocker.Mock(spec=OmniMasterServer)
+        mocker.patch.object(runtime_mod, "OmniMasterServer", return_value=mock_oms)
+        mocker.patch.object(
+            omni_coord_mod,
+            "OmniCoordinatorRuntime",
+            return_value=mocker.Mock(router_address="tcp://127.0.0.1:9999"),
+        )
+
+        stage_plans = [
+            _make_llm_plan(0, stage_id=0, launch_mode="remote"),
+            _make_diffusion_plan(1, stage_id=1, launch_mode="remote"),
+        ]
+
+        runtime._start_omni_master_server(stage_plans)
+
+        call_kwargs = runtime_mod.OmniMasterServer.call_args.kwargs
+        # Under --head every stage is remote, so the head reserves no
+        # locally-owned replica slots at all.
+        assert call_kwargs["head_local_replicas"] == {}
         mock_oms.start.assert_called_once()
 
     def test_start_omni_master_server_duplicate_stage_ids_raise(self):

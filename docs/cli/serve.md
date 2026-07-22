@@ -32,6 +32,31 @@ CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct --omni \
     --omni-master-port 26000
 ```
 
+The two examples above still colocate the API server with Stage 0
+(`--stage-id 0` without `--headless`). Pass `--head` instead to run the API
+server as a pure orchestrator with no locally hosted stage and no GPU
+requirement; Stage 0 then becomes just another headless worker, launched
+the same way as Stage 1 above:
+
+```bash
+vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct --omni \
+    --port 8091 \
+    --head \
+    --omni-master-address 127.0.0.1 \
+    --omni-master-port 26000
+```
+
+```bash
+CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct --omni \
+    --stage-id 0 \
+    --headless \
+    --omni-master-address 127.0.0.1 \
+    --omni-master-port 26000
+```
+
+`--head` requires `--omni-master-address`/`--omni-master-port` and is
+mutually exclusive with `--stage-id` and `--headless`.
+
 When utilizing a custom deployment YAML based on the new schema, append `--deploy-config /path/to/override.yaml` to each command execution. Conversely, for legacy models, substitute this parameter with `--stage-configs-path /path/to/stage_configs.yaml`.
 
 In the standard execution paradigm, the `--stage-overrides` argument is utilized to apply stage-specific configurations from a single CLI command.

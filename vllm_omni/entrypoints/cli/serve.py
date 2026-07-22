@@ -110,6 +110,17 @@ class OmniServeCommand(CLISubcommand):
         if args.stage_id is not None and (args.omni_master_address is None or args.omni_master_port is None):
             raise ValueError("--stage-id requires both --omni-master-address and --omni-master-port to be set")
 
+        # --head runs this process as a pure orchestrator with no locally
+        # hosted stage: every stage (including stage 0) registers remotely
+        # via --headless, the same way non-zero stages already do.
+        if getattr(args, "head", False):
+            if args.stage_id is not None:
+                raise ValueError("--head cannot be combined with --stage-id")
+            if args.headless:
+                raise ValueError("--head cannot be combined with --headless")
+            if args.omni_master_address is None or args.omni_master_port is None:
+                raise ValueError("--head requires both --omni-master-address and --omni-master-port to be set")
+
         # --omni-replica-address is only consulted in run_headless(); reject it
         # on the head so a misconfigured launch fails loudly instead of being
         # silently ignored.
@@ -123,7 +134,10 @@ class OmniServeCommand(CLISubcommand):
             if omni_dp_size_local < 1:
                 raise ValueError(f"--omni-dp-size-local must be >= 1, got {omni_dp_size_local}")
             if omni_dp_size_local != 1 and args.stage_id is None:
-                raise ValueError("--omni-dp-size-local != 1 requires --stage-id to be set")
+                raise ValueError(
+                    "--omni-dp-size-local != 1 requires --stage-id to be set "
+                    "(there is no local stage to size under --head)"
+                )
 
         # vLLM CLI args that omni does not honor: parallelism comes from the
         # per-stage YAML (parallel_config:, enable_expert_parallel:) and the
@@ -282,6 +296,19 @@ class OmniServeCommand(CLISubcommand):
             type=int,
             default=None,
             help="Select and launch a single stage by stage_id.",
+        )
+        omni_config_group.add_argument(
+            "--head",
+            action="store_true",
+            default=False,
+            help=(
+                "Run this process as a pure orchestrator/API server with no "
+                "locally hosted stage. Every configured stage (including "
+                "stage 0) launches elsewhere via --headless and registers "
+                "with this process's OmniMasterServer. Requires "
+                "--omni-master-address/--omni-master-port; mutually "
+                "exclusive with --stage-id and --headless."
+            ),
         )
         omni_config_group.add_argument(
             "--replica-id",

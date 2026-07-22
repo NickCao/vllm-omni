@@ -209,6 +209,7 @@ class AsyncOmniEngine:
     _coordinator_runtime: Any = None
     _transfer_emitter: Any = None
     _enable_orch_monitor: bool = False
+    _head_only: bool = False
 
     def __init__(
         self,
@@ -247,9 +248,13 @@ class AsyncOmniEngine:
         # Single-stage mode detection                                        #
         # ------------------------------------------------------------------ #
         # Single-stage mode is enabled when the caller explicitly passes      #
-        # single_stage_mode=True, or when a stage_id is provided in the args. #
+        # single_stage_mode=True, when a stage_id is provided in the args, or #
+        # when head=True (pure orchestrator, no locally hosted stage).        #
         _stage_id_kwarg = kwargs.get("stage_id")
-        if isinstance(_stage_id_kwarg, int) and not single_stage_mode:
+        self._head_only = bool(kwargs.pop("head", False))
+        if self._head_only and _stage_id_kwarg is not None:
+            raise ValueError("`head` cannot be combined with `stage_id`")
+        if (self._head_only or isinstance(_stage_id_kwarg, int)) and not single_stage_mode:
             single_stage_mode = True
 
         self.single_stage_mode: bool = single_stage_mode
@@ -272,8 +277,9 @@ class AsyncOmniEngine:
 
         if single_stage_mode:
             logger.info(
-                "[AsyncOmniEngine] Single-stage mode enabled (stage_id_filter=%s, master=%s:%s)",
+                "[AsyncOmniEngine] Single-stage mode enabled (stage_id_filter=%s, head_only=%s, master=%s:%s)",
                 self._single_stage_id_filter,
+                self._head_only,
                 self._omni_master_address,
                 self._omni_master_port,
             )
@@ -373,6 +379,7 @@ class AsyncOmniEngine:
             async_chunk=self.async_chunk,
             tokenizer=self.tokenizer,
             single_stage_id_filter=self._single_stage_id_filter,
+            head_only=self._head_only,
             omni_master_address=self._omni_master_address,
             omni_master_port=self._omni_master_port,
             omni_dp_size_local=self._omni_dp_size_local,
