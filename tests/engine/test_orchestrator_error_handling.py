@@ -25,7 +25,9 @@ from .test_orchestrator import (
     FakeStageClient,
     OrchestratorFixture,
     _build_harness,
+    _build_stage_pools,
     _enqueue_add_request,
+    _shutdown_orchestrator,
     _wait_for,
 )
 
@@ -118,6 +120,73 @@ async def test_engine_dead_error_broadcasts_fatal_and_shuts_down(orchestrator_fa
         if orchestrator_fixture.thread.is_alive():
             orchestrator_fixture.request_sync_q.put_nowait(ShutdownRequestMessage())
             orchestrator_fixture.thread.join(timeout=5)
+
+
+# ───────── Stale EngineDeadError from an already-detached replica ─────────
+
+
+class FakeRacingDeadLLMStageClient(FakeStageClient):
+    """LLM stage client whose ``get_output_async`` blocks until told to die.
+
+    Models a replica that crashed and whose in-flight poll only raises
+    ``EngineDeadError`` *after* ``MembershipController`` has already removed
+    it from the pool (e.g. once a heartbeat timeout fires and the watcher
+    calls ``StagePool.remove_client`` + ``client.shutdown()``, which is what
+    unblocks the underlying ZMQ read with a terminal error) -- the exact
+    race observed when a stage restarts and a healthy replacement replica
+    has already attached by the time the stale error surfaces.
+    """
+
+    def __init__(self, *args, input_addr: str, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.request_address = input_addr
+        self.die_event = asyncio.Event()
+
+    async def get_output_async(self):
+        await self.die_event.wait()
+        raise EngineDeadError("Stage-0 replica engine core is dead")
+
+
+@pytest.mark.asyncio
+async def test_stale_dead_error_from_detached_replica_does_not_kill_engine(orchestrator_factory) -> None:
+    """A terminal error from a replica already removed via ``remove_client``
+    must not be treated as fatal for the whole engine: the replica was
+    superseded, so its stale error is moot and other replicas (including a
+    freshly attached replacement) must keep running.
+    """
+    dying = FakeRacingDeadLLMStageClient(input_addr="tcp://dying-replica", stage_type="llm", final_output=True)
+    healthy = FakeStageClient(stage_type="llm", final_output=True)
+    stage_pools = _build_stage_pools([[dying, healthy]])
+    pool = stage_pools[0]
+
+    orchestrator_fixture = orchestrator_factory([], stage_pools=stage_pools)
+
+    try:
+        # Simulate MembershipController detaching the dying replica (as a
+        # heartbeat-timeout eviction would) while its poll is still in
+        # flight, then let the stale poll finally raise.
+        pool.remove_client("tcp://dying-replica")
+        dying.die_event.set()
+
+        # Give the orchestration loop a few iterations to observe the stale
+        # error; with the bug this shuts down the whole engine.
+        await asyncio.sleep(0.2)
+
+        assert orchestrator_fixture.thread.is_alive()
+        assert not orchestrator_fixture.orchestrator._shutdown_event.is_set()
+
+        # The healthy replica must still be usable for new requests.
+        await _enqueue_add_request(
+            orchestrator_fixture,
+            request_id="req-after-restart",
+            prompt=SimpleNamespace(request_id="req-after-restart", prompt_token_ids=[1, 2]),
+            original_prompt={"prompt": "hello"},
+            sampling_params_list=[_sampling_params()],
+            final_stage_id=0,
+        )
+        await _wait_for(lambda: len(healthy.add_request_calls) == 1)
+    finally:
+        await _shutdown_orchestrator(orchestrator_fixture)
 
 
 # ───────── Diffusion stage error output routing ─────────

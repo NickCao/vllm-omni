@@ -928,3 +928,26 @@ def test_port_from_zmq_address_parsing():
     assert _port_from_zmq_address(None) is None
     assert _port_from_zmq_address("ipc:///tmp/sock") is None
     assert _port_from_zmq_address("tcp://host:not-a-port") is None
+
+
+def test_stage_clients_reflects_live_replica_after_pool_swap():
+    """AsyncOmniEngine.stage_clients must be a live view of the stage pools,
+    not a snapshot frozen at startup, so a replica that dies and is replaced
+    (StagePool.remove_client + add_client, as driven by MembershipController
+    on a stage restart) is reflected without waiting for re-initialization.
+    """
+    from vllm_omni.engine.stage_pool import StagePool
+
+    dead_client = types.SimpleNamespace(_engine_dead=True, request_address="tcp://dead-replica")
+    pool = StagePool(stage_id=0, clients=[dead_client])
+
+    engine = object.__new__(AsyncOmniEngine)
+    engine.stage_pools = [pool]
+
+    assert engine.stage_clients == [dead_client]
+
+    healthy_client = types.SimpleNamespace(_engine_dead=False, request_address="tcp://healthy-replica")
+    pool.remove_client("tcp://dead-replica")
+    pool.add_client("tcp://healthy-replica", healthy_client)
+
+    assert engine.stage_clients == [healthy_client]

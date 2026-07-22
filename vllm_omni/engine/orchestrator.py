@@ -714,6 +714,25 @@ class Orchestrator:
                         except asyncio.CancelledError:
                             raise
                         except EngineDeadError as e:
+                            if pool.clients[replica_id] is None:
+                                # This replica was already detached (e.g. a
+                                # crashed replica superseded by a fresh one
+                                # after a stage restart) by the time its
+                                # in-flight poll finally raised -- the
+                                # underlying MPClient.shutdown() call made
+                                # during detach is what unblocked this poll
+                                # with a terminal error. The error is stale
+                                # and would otherwise take the whole engine
+                                # down even though a healthy replacement may
+                                # already be attached. Ignore it and move on.
+                                logger.info(
+                                    "[Orchestrator] Stage-%s replica-%s poll failed after the replica"
+                                    " was already detached, ignoring stale error: %s",
+                                    stage_id,
+                                    replica_id,
+                                    e,
+                                )
+                                continue
                             logger.error(
                                 "[Orchestrator] Stage-%s is dead: %s",
                                 stage_id,

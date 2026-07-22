@@ -1137,6 +1137,38 @@ def test_omni_base_errored_true_when_stage_resources_engine_dead():
     assert base.errored is True
 
 
+def test_omni_base_errored_clears_after_dead_replica_is_replaced():
+    """Regression test: a stage restart (dead replica swapped for a healthy
+    one via StagePool.add_client/remove_client) must un-latch ``errored``.
+
+    Previously ``AsyncOmniEngine.stage_clients`` was a frozen snapshot taken
+    once at startup, so ``OmniBase._has_dead_stage`` kept inspecting the
+    original dead client object forever even after the pool held a healthy
+    replacement, permanently returning HTTP 500s.
+    """
+    from vllm_omni.engine.async_omni_engine import AsyncOmniEngine
+    from vllm_omni.engine.stage_pool import StagePool
+    from vllm_omni.entrypoints.omni_base import OmniBase
+
+    dead_client = SimpleNamespace(_engine_dead=True, request_address="tcp://dead-replica")
+    pool = StagePool(stage_id=0, clients=[dead_client])
+
+    engine = object.__new__(AsyncOmniEngine)
+    engine.stage_pools = [pool]
+    engine.is_alive = lambda: True
+
+    base = object.__new__(OmniBase)
+    base.engine = engine
+
+    assert base.errored is True
+
+    healthy_client = SimpleNamespace(_engine_dead=False, request_address="tcp://healthy-replica")
+    pool.remove_client("tcp://dead-replica")
+    pool.add_client("tcp://healthy-replica", healthy_client)
+
+    assert base.errored is False
+
+
 # ───────── Omni (sync) EngineDeadError / EngineGenerateError ─────────
 
 
