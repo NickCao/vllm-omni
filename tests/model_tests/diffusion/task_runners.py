@@ -88,20 +88,42 @@ def _get_online_images(responses: list[DiffusionResponse]) -> list[Image.Image]:
     return images
 
 
+def _validate_video_frames(videos: list, expected_n: int = 1, expected_frames: int = VIDEO_NUM_FRAMES):
+    """Given a list of videos (one array per generation, each holding all of
+    that generation's frames), ensure count and shape are correct."""
+    assert len(videos) == expected_n
+    for video in videos:
+        assert isinstance(video, np.ndarray)
+        assert video.ndim == 4, f"Expected 4D video array (frames, H, W, C), got shape {video.shape}"
+        assert video.shape[-4] == expected_frames, f"Expected {expected_frames} frames, got {video.shape[-4]}"
+        assert video.shape[-3] == HEIGHT, f"Expected height {HEIGHT}, got {video.shape[-3]}"
+        assert video.shape[-2] == WIDTH, f"Expected width {WIDTH}, got {video.shape[-2]}"
+        assert video.shape[-1] == 3, f"Expected 3 channels (RGB), got {video.shape[-1]}"
+    return videos
+
+
+def _get_offline_videos(outputs: list[OmniRequestOutput]) -> list:
+    """Extract the list of videos (one array per generation) from an Omni .generate() call.
+
+    Multi-output video generations come back as a single 5D array
+    (num_outputs, num_frames, H, W, C) rather than one 4D array per output;
+    split it into a flat per-output list here so callers always see one
+    4D array per generation.
+    """
+    assert len(outputs) == 1
+    videos = []
+    for video in outputs[0].images:
+        if video.ndim == 5:
+            videos.extend(video)
+        else:
+            videos.append(video)
+    return videos
+
+
 def _validate_video(outputs: list[OmniRequestOutput], expected_n: int = 1):
     """Given a set of outputs, ensure we got video frames with the expected shape."""
-    assert len(outputs) == expected_n
-    for output in outputs:
-        # Video models return numpy arrays via output.images
-        images = output.images
-        assert len(images) > 0
-        for frame_data in images:
-            assert isinstance(frame_data, np.ndarray)
-            # (num_outputs, num_frames, H, W, C) or (num_frames, H, W, C)
-            assert frame_data.ndim in (4, 5), f"Expected 4D or 5D video array, got shape {frame_data.shape}"
-            assert frame_data.shape[-3] == HEIGHT, f"Expected height {HEIGHT}, got {frame_data.shape[-3]}"
-            assert frame_data.shape[-2] == WIDTH, f"Expected width {WIDTH}, got {frame_data.shape[-2]}"
-            assert frame_data.shape[-1] == 3, f"Expected 3 channels (RGB), got {frame_data.shape[-1]}"
+    _validate_video_frames(_get_offline_videos(outputs), expected_n=expected_n)
+
 
 
 ### Offline helpers
@@ -113,10 +135,17 @@ def _run_offline_t2v(omni: Omni, params: OmniDiffusionSamplingParams = VIDEO_GEN
     return omni.generate({"prompt": PROMPT}, params)
 
 
-def _run_offline_i2i(omni: Omni):
+def _run_offline_i2i(omni: Omni, params: OmniDiffusionSamplingParams = IMAGE_GEN_SAMPLING_PARAMS):
     return omni.generate(
         {"prompt": PROMPT, "multi_modal_data": {"image": INPUT_IMAGE}},
-        IMAGE_GEN_SAMPLING_PARAMS,
+        params,
+    )
+
+
+def _run_offline_i2v(omni: Omni, params: OmniDiffusionSamplingParams = VIDEO_GEN_SAMPLING_PARAMS):
+    return omni.generate(
+        {"prompt": PROMPT, "multi_modal_data": {"image": INPUT_IMAGE}},
+        params,
     )
 
 
@@ -186,6 +215,22 @@ def run_and_validate_text_to_image_multi_output(omni: Omni):
     params = replace(IMAGE_GEN_SAMPLING_PARAMS, num_outputs_per_prompt=2)
     _validate_images(_get_offline_images(_run_offline_t2i(omni, params)), expected_n=2)
 
+def run_and_validate_image_to_video_request(omni: Omni):
+    """Run and validate an image to video request.
+
+    LTX2Pipeline uses a unified text/image entry and can fall back to T2V if
+    the image never reaches conditioning, so also run T2V with the same seed
+    and prompt and assert the outputs differ; a regression that silently
+    drops the input image would otherwise still pass a "did we get a valid
+    video back" check alone.
+    """
+    i2v_video = _validate_video_frames(_get_offline_videos(_run_offline_i2v(omni)))[0]
+    t2v_video = _validate_video_frames(_get_offline_videos(_run_offline_t2v(omni)))[0]
+    assert not np.array_equal(i2v_video, t2v_video), (
+        "I2V output is identical to T2V output with the same seed and prompt; "
+        "the input image may not be reaching conditioning."
+    )
+
 
 def _run_online_t2v(
     server: OmniServer, client: OpenAIClientHandler, form_data: dict | None = None
@@ -195,6 +240,15 @@ def _run_online_t2v(
     data.setdefault("prompt", PROMPT)
     data.setdefault("model", server.model)
     return client.send_video_diffusion_request({"form_data": data})
+
+
+def _run_online_i2v(server: OmniServer, client: OpenAIClientHandler) -> list[DiffusionResponse]:
+    """Run an image to video request through the server's /v1/videos API."""
+    data = dict(VIDEO_GEN_FORM_DATA)
+    data.setdefault("prompt", PROMPT)
+    data.setdefault("model", server.model)
+    image_data_url = _build_online_image_data_url()
+    return client.send_video_diffusion_request({"form_data": data, "image_reference": image_data_url})
 
 
 def _get_online_videos(responses: list[DiffusionResponse]) -> list:
@@ -237,3 +291,8 @@ def run_and_validate_online_text_to_image_multi_output(server: OmniServer, clien
 def run_and_validate_online_text_to_video_request(server: OmniServer, client: OpenAIClientHandler):
     """Run and validate a text to video request through the server."""
     _get_online_videos(_run_online_t2v(server, client))
+
+
+def run_and_validate_online_image_to_video_request(server: OmniServer, client: OpenAIClientHandler):
+    """Run and validate an image to video request through the server."""
+    _get_online_videos(_run_online_i2v(server, client))
