@@ -8,9 +8,11 @@ import io
 from dataclasses import replace
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from tests.helpers.runtime import DiffusionResponse, OmniServer, OpenAIClientHandler, dummy_messages_from_mix_data
+from tests.model_tests.diffusion.config_types import DiffusionTasks
 from vllm_omni.entrypoints.omni import Omni
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams
 from vllm_omni.outputs import OmniRequestOutput
@@ -70,7 +72,9 @@ def _validate_image_gen_determinism(images_a: list[Image.Image], images_b: list[
     """Ensure that two image sets are valid and that the results match."""
     _validate_images(images_a)
     _validate_images(images_b)
-    assert np.array_equal(np.array(images_a[0]), np.array(images_b[0]))
+    assert len(images_a) == len(images_b)
+    for image_a, image_b in zip(images_a, images_b, strict=True):
+        assert np.array_equal(np.array(image_a), np.array(image_b))
 
 
 ### Output extractor utils for offline / online paths respectively
@@ -125,6 +129,14 @@ def _validate_video(outputs: list[OmniRequestOutput], expected_n: int = 1):
     _validate_video_frames(_get_offline_videos(outputs), expected_n=expected_n)
 
 
+def _validate_video_gen_determinism(videos_a: list, videos_b: list):
+    """Ensure that two video generations are valid and that the results match."""
+    _validate_video_frames(videos_a)
+    _validate_video_frames(videos_b)
+    assert len(videos_a) == len(videos_b)
+    for video_a, video_b in zip(videos_a, videos_b, strict=True):
+        assert np.array_equal(video_a, video_b)
+
 
 ### Offline helpers
 def _run_offline_t2i(omni: Omni, params: OmniDiffusionSamplingParams = IMAGE_GEN_SAMPLING_PARAMS):
@@ -171,7 +183,9 @@ def _run_online_t2i(
     return client.send_diffusion_request(request_config)
 
 
-def _run_online_i2i(server: OmniServer, client: OpenAIClientHandler) -> list[DiffusionResponse]:
+def _run_online_i2i(
+    server: OmniServer, client: OpenAIClientHandler, extra_body: dict | None = None
+) -> list[DiffusionResponse]:
     """Run an image to image request through the server."""
     image_data_url = _build_online_image_data_url()
     messages = dummy_messages_from_mix_data(
@@ -181,7 +195,7 @@ def _run_online_i2i(server: OmniServer, client: OpenAIClientHandler) -> list[Dif
     request_config = {
         "model": server.model,
         "messages": messages,
-        "extra_body": IMAGE_GEN_EXTRA_BODY,
+        "extra_body": extra_body or IMAGE_GEN_EXTRA_BODY,
     }
     return client.send_diffusion_request(request_config)
 
@@ -202,19 +216,6 @@ def run_and_validate_text_to_video_request(omni: Omni):
     _validate_video(_run_offline_t2v(omni))
 
 
-def run_and_validate_text_to_image_determinism(omni: Omni):
-    """Checks for determinism; for now we just keep this for TTI."""
-    _validate_image_gen_determinism(
-        _get_offline_images(_run_offline_t2i(omni)),
-        _get_offline_images(_run_offline_t2i(omni)),
-    )
-
-
-def run_and_validate_text_to_image_multi_output(omni: Omni):
-    """Checks for multi-output; for now we just keep this for TTI."""
-    params = replace(IMAGE_GEN_SAMPLING_PARAMS, num_outputs_per_prompt=2)
-    _validate_images(_get_offline_images(_run_offline_t2i(omni, params)), expected_n=2)
-
 def run_and_validate_image_to_video_request(omni: Omni):
     """Run and validate an image to video request.
 
@@ -230,6 +231,50 @@ def run_and_validate_image_to_video_request(omni: Omni):
         "I2V output is identical to T2V output with the same seed and prompt; "
         "the input image may not be reaching conditioning."
     )
+
+
+def run_and_validate_determinism(omni: Omni, task_type: DiffusionTasks):
+    """Checks for determinism, dispatching by task type."""
+    if task_type == DiffusionTasks.TEXT_TO_IMAGE:
+        _validate_image_gen_determinism(
+            _get_offline_images(_run_offline_t2i(omni)),
+            _get_offline_images(_run_offline_t2i(omni)),
+        )
+    elif task_type == DiffusionTasks.IMAGE_TO_IMAGE:
+        _validate_image_gen_determinism(
+            _get_offline_images(_run_offline_i2i(omni)),
+            _get_offline_images(_run_offline_i2i(omni)),
+        )
+    elif task_type == DiffusionTasks.TEXT_TO_VIDEO:
+        _validate_video_gen_determinism(
+            _get_offline_videos(_run_offline_t2v(omni)),
+            _get_offline_videos(_run_offline_t2v(omni)),
+        )
+    elif task_type == DiffusionTasks.IMAGE_TO_VIDEO:
+        _validate_video_gen_determinism(
+            _get_offline_videos(_run_offline_i2v(omni)),
+            _get_offline_videos(_run_offline_i2v(omni)),
+        )
+    else:
+        raise ValueError(f"Task type {task_type} is not yet supported for determinism checks")
+
+
+def run_and_validate_multi_output(omni: Omni, task_type: DiffusionTasks):
+    """Checks for multi-output, dispatching by task type."""
+    if task_type == DiffusionTasks.TEXT_TO_IMAGE:
+        params = replace(IMAGE_GEN_SAMPLING_PARAMS, num_outputs_per_prompt=2)
+        _validate_images(_get_offline_images(_run_offline_t2i(omni, params)), expected_n=2)
+    elif task_type == DiffusionTasks.IMAGE_TO_IMAGE:
+        params = replace(IMAGE_GEN_SAMPLING_PARAMS, num_outputs_per_prompt=2)
+        _validate_images(_get_offline_images(_run_offline_i2i(omni, params)), expected_n=2)
+    elif task_type == DiffusionTasks.TEXT_TO_VIDEO:
+        params = replace(VIDEO_GEN_SAMPLING_PARAMS, num_outputs_per_prompt=2)
+        _validate_video_frames(_get_offline_videos(_run_offline_t2v(omni, params)), expected_n=2)
+    elif task_type == DiffusionTasks.IMAGE_TO_VIDEO:
+        params = replace(VIDEO_GEN_SAMPLING_PARAMS, num_outputs_per_prompt=2)
+        _validate_video_frames(_get_offline_videos(_run_offline_i2v(omni, params)), expected_n=2)
+    else:
+        raise ValueError(f"Task type {task_type} is not yet supported for multi-output checks")
 
 
 def _run_online_t2v(
@@ -271,21 +316,56 @@ def run_and_validate_online_image_to_image_request(server: OmniServer, client: O
     _validate_images(_get_online_images(_run_online_i2i(server, client)))
 
 
-def run_and_validate_online_text_to_image_determinism(server: OmniServer, client: OpenAIClientHandler):
-    """Checks for determinism through the server; for now we just keep this for TTI."""
-    _validate_image_gen_determinism(
-        _get_online_images(_run_online_t2i(server, client)),
-        _get_online_images(_run_online_t2i(server, client)),
-    )
+def run_and_validate_online_determinism(server: OmniServer, client: OpenAIClientHandler, task_type: DiffusionTasks):
+    """Checks for determinism through the server, dispatching by task type.
+
+    Video is skipped online only: send_video_diffusion_request returns encoded
+    video bytes, not a frame-level array, and re-encoding the same content
+    isn't guaranteed to be byte-identical even for deterministic generation,
+    so a reliable check isn't possible with what's implemented here. The
+    offline determinism check (run_and_validate_determinism) does cover
+    video, since it has direct access to the raw frame arrays.
+    """
+    if task_type == DiffusionTasks.TEXT_TO_IMAGE:
+        _validate_image_gen_determinism(
+            _get_online_images(_run_online_t2i(server, client)),
+            _get_online_images(_run_online_t2i(server, client)),
+        )
+    elif task_type == DiffusionTasks.IMAGE_TO_IMAGE:
+        _validate_image_gen_determinism(
+            _get_online_images(_run_online_i2i(server, client)),
+            _get_online_images(_run_online_i2i(server, client)),
+        )
+    elif task_type in (DiffusionTasks.TEXT_TO_VIDEO, DiffusionTasks.IMAGE_TO_VIDEO):
+        pytest.skip(f"Online determinism isn't supported for {task_type}.")
+    else:
+        raise ValueError(f"Task type {task_type} is not yet supported for determinism checks")
 
 
-def run_and_validate_online_text_to_image_multi_output(server: OmniServer, client: OpenAIClientHandler):
-    """Checks for multi-output through the server; for now we just keep this for TTI."""
-    extra_body = {**IMAGE_GEN_EXTRA_BODY, "num_outputs_per_prompt": 2}
-    _validate_images(
-        _get_online_images(_run_online_t2i(server, client, extra_body=extra_body)),
-        expected_n=2,
-    )
+def run_and_validate_online_multi_output(server: OmniServer, client: OpenAIClientHandler, task_type: DiffusionTasks):
+    """Checks for multi-output through the server, dispatching by task type.
+
+    Video is skipped online only: send_video_diffusion_request explicitly
+    disallows more than one request/output per call. The offline multi-output
+    check (run_and_validate_multi_output) does cover video, since
+    Omni.generate() supports num_outputs_per_prompt directly.
+    """
+    if task_type == DiffusionTasks.TEXT_TO_IMAGE:
+        extra_body = {**IMAGE_GEN_EXTRA_BODY, "num_outputs_per_prompt": 2}
+        _validate_images(
+            _get_online_images(_run_online_t2i(server, client, extra_body=extra_body)),
+            expected_n=2,
+        )
+    elif task_type == DiffusionTasks.IMAGE_TO_IMAGE:
+        extra_body = {**IMAGE_GEN_EXTRA_BODY, "num_outputs_per_prompt": 2}
+        _validate_images(
+            _get_online_images(_run_online_i2i(server, client, extra_body=extra_body)),
+            expected_n=2,
+        )
+    elif task_type in (DiffusionTasks.TEXT_TO_VIDEO, DiffusionTasks.IMAGE_TO_VIDEO):
+        pytest.skip(f"Online multi-output isn't supported for {task_type}.")
+    else:
+        raise ValueError(f"Task type {task_type} is not yet supported for multi-output checks")
 
 
 def run_and_validate_online_text_to_video_request(server: OmniServer, client: OpenAIClientHandler):
