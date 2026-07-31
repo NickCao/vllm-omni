@@ -74,4 +74,14 @@ DIFFUSION_TEST_SETTINGS = {
         builder=diff_model_builders.tiny_qwen_image_edit_plus_builder,
         supported_tasks=[DiffusionTasks.IMAGE_TO_IMAGE],
     ),
+    "FluxKontextPipeline": DiffusionModelTestOpts(
+        model="black-forest-labs/FLUX.1-Kontext-dev",
+        builder=diff_model_builders.tiny_flux_kontext_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE, DiffusionTasks.IMAGE_TO_IMAGE],
+    ),
+    "OvisImagePipeline": DiffusionModelTestOpts(
+        model="AIDC-AI/Ovis-Image-7B",
+        builder=diff_model_builders.tiny_ovis_image_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE],
+    ),
 }

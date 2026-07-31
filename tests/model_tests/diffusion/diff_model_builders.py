@@ -92,24 +92,38 @@ def tiny_qwen_image_edit_plus_builder() -> str:
     )
 
 
+def _shrink_clip_text_encoder_config(config: dict) -> dict:
+    config["num_hidden_layers"] = 2
+    return config
+
+
+def _shrink_t5_text_encoder_config(config: dict) -> dict:
+    config["num_layers"] = 2
+    config["num_decoder_layers"] = 2
+    config["d_ff"] = 64
+    config["num_heads"] = 4
+    return config
+
+
 def tiny_flux_builder() -> str:
-    def shrink_clip_text_encoder(config: dict) -> dict:
-        config["num_hidden_layers"] = 2
-        return config
-
-    def shrink_t5_text_encoder(config: dict) -> dict:
-        config["num_layers"] = 2
-        config["num_decoder_layers"] = 2
-        config["d_ff"] = 64
-        config["num_heads"] = 4
-        return config
-
     return build_tiny_from_configs(
         "FluxPipeline",
         "black-forest-labs/FLUX.1-schnell",
         transform={
-            "text_encoder": shrink_clip_text_encoder,
-            "text_encoder_2": shrink_t5_text_encoder,
+            "text_encoder": _shrink_clip_text_encoder_config,
+            "text_encoder_2": _shrink_t5_text_encoder_config,
+            "transformer": partial(_shrink_dit_rope_config, num_single_layers=2, default_axes_dims_rope=[16, 56, 56]),
+        },
+    )
+
+
+def tiny_flux_kontext_builder() -> str:
+    return build_tiny_from_configs(
+        "FluxKontextPipeline",
+        "black-forest-labs/FLUX.1-Kontext-dev",
+        transform={
+            "text_encoder": _shrink_clip_text_encoder_config,
+            "text_encoder_2": _shrink_t5_text_encoder_config,
             "transformer": partial(_shrink_dit_rope_config, num_single_layers=2, default_axes_dims_rope=[16, 56, 56]),
         },
     )
@@ -138,5 +152,27 @@ def tiny_flux2_builder() -> str:
         transform={
             "text_encoder": shrink_text_encoder,
             "transformer": partial(_shrink_dit_rope_config, num_single_layers=2),
+        },
+    )
+
+
+def _shrink_ovis_text_encoder_config(config: dict, hidden_size: int = 64) -> dict:
+    config["num_hidden_layers"] = 2
+    config["intermediate_size"] = 64
+    config["hidden_size"] = hidden_size
+    config["num_attention_heads"] = 2
+    config["num_key_value_heads"] = 2
+    config["head_dim"] = hidden_size // config["num_attention_heads"]
+    config["layer_types"] = config["layer_types"][:2]
+    return config
+
+
+def tiny_ovis_image_builder() -> str:
+    return build_tiny_from_configs(
+        "OvisImagePipeline",
+        "AIDC-AI/Ovis-Image-7B",
+        transform={
+            "text_encoder": _shrink_ovis_text_encoder_config,
+            "transformer": partial(_shrink_dit_rope_config, num_single_layers=2, joint_attention_dim=64),
         },
     )
