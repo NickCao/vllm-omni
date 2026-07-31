@@ -40,6 +40,43 @@ def tiny_ltx2_builder() -> str:
     return build_tiny_from_configs("LTX2Pipeline", "Lightricks/LTX-2", TINY_CONFIGS_DIR / "LTX2Pipeline")
 
 
+def _shrink_hunyuan_video_text_encoder_config(config: dict, hidden_size: int = 64) -> dict:
+    old_head_dim = config["hidden_size"] / config["num_attention_heads"]
+    config["num_hidden_layers"] = 2
+    config["intermediate_size"] = 64
+    config["hidden_size"] = hidden_size
+    config["num_attention_heads"] = 2
+    config["num_key_value_heads"] = 2
+    config["layer_types"] = config["layer_types"][:2]
+    factor = old_head_dim / (hidden_size / 2)
+    mrope_section = config["rope_scaling"]["mrope_section"]
+    config["rope_scaling"]["mrope_section"] = [round(d / factor) for d in mrope_section]
+    return config
+
+
+def _shrink_hunyuan_video_transformer_config(config: dict, text_embed_dim: int = 64) -> dict:
+    config["num_layers"] = 2
+    config["num_refiner_layers"] = 2
+    config["text_embed_dim"] = text_embed_dim
+    factor = config["attention_head_dim"] / 32
+    config["attention_head_dim"] = 32
+    config["num_attention_heads"] = 4
+    config["rope_axes_dim"] = [int(d / factor) for d in config["rope_axes_dim"]]
+    return config
+
+
+def tiny_hunyuan_video_15_builder() -> str:
+    return build_tiny_from_configs(
+        "HunyuanVideo15Pipeline",
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        transform={
+            "text_encoder": _shrink_hunyuan_video_text_encoder_config,
+            "text_encoder_2": _shrink_t5_text_encoder_config,
+            "transformer": _shrink_hunyuan_video_transformer_config,
+        },
+    )
+
+
 def _shrink_qwen_text_encoder_config(config: dict, hidden_size: int = 64) -> dict:
     text_config = config["text_config"]
     old_head_dim = text_config["hidden_size"] / text_config["num_attention_heads"]
@@ -89,6 +126,55 @@ def tiny_qwen_image_edit_plus_builder() -> str:
         "QwenImageEditPlusPipeline",
         "Qwen/Qwen-Image-Edit-2511",
         transform={"text_encoder": _shrink_qwen_text_encoder_config, "transformer": _shrink_qwen_transformer_config},
+    )
+
+
+def _shrink_longcat_text_encoder_config(config: dict, hidden_size: int = 64) -> dict:
+    # LongCat ships an older (pre-text_config-nesting) Qwen2.5-VL config layout,
+    # so unlike _shrink_qwen_text_encoder_config, fields live at the top level.
+    old_head_dim = config["hidden_size"] / config["num_attention_heads"]
+    config["num_hidden_layers"] = 2
+    config["intermediate_size"] = 64
+    config["hidden_size"] = hidden_size
+    config["num_attention_heads"] = 2
+    config["num_key_value_heads"] = 2
+    factor = old_head_dim / (hidden_size / 2)
+    mrope_section = config["rope_scaling"]["mrope_section"]
+    config["rope_scaling"]["mrope_section"] = [round(d / factor) for d in mrope_section]
+    config["vision_config"]["depth"] = 2
+    config["vision_config"]["intermediate_size"] = 64
+    config["vision_config"]["fullatt_block_indexes"] = [0, 1]
+    config["vision_config"]["out_hidden_size"] = hidden_size
+    return config
+
+
+def _shrink_longcat_transformer_config(config: dict, joint_attention_dim: int = 64) -> dict:
+    config = _shrink_dit_rope_config(
+        config, num_single_layers=2, default_axes_dims_rope=[16, 56, 56], joint_attention_dim=joint_attention_dim
+    )
+    config["pooled_projection_dim"] = joint_attention_dim
+    return config
+
+
+def tiny_longcat_image_builder() -> str:
+    return build_tiny_from_configs(
+        "LongCatImagePipeline",
+        "meituan-longcat/LongCat-Image",
+        transform={
+            "text_encoder": _shrink_longcat_text_encoder_config,
+            "transformer": _shrink_longcat_transformer_config,
+        },
+    )
+
+
+def tiny_longcat_image_edit_builder() -> str:
+    return build_tiny_from_configs(
+        "LongCatImageEditPipeline",
+        "meituan-longcat/LongCat-Image-Edit",
+        transform={
+            "text_encoder": _shrink_longcat_text_encoder_config,
+            "transformer": _shrink_longcat_transformer_config,
+        },
     )
 
 

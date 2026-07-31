@@ -84,4 +84,19 @@ DIFFUSION_TEST_SETTINGS = {
         builder=diff_model_builders.tiny_ovis_image_builder,
         supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE],
     ),
+    "LongCatImagePipeline": DiffusionModelTestOpts(
+        model="meituan-longcat/LongCat-Image",
+        builder=diff_model_builders.tiny_longcat_image_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE],
+    ),
+    "LongCatImageEditPipeline": DiffusionModelTestOpts(
+        model="meituan-longcat/LongCat-Image-Edit",
+        builder=diff_model_builders.tiny_longcat_image_edit_builder,
+        supported_tasks=[DiffusionTasks.IMAGE_TO_IMAGE],
+    ),
+    "HunyuanVideo15Pipeline": DiffusionModelTestOpts(
+        model="hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        builder=diff_model_builders.tiny_hunyuan_video_15_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_VIDEO],
+    ),
 }
