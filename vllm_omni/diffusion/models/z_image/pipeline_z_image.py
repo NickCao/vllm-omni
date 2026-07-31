@@ -42,6 +42,7 @@ from vllm_omni.diffusion.models.z_image.z_image_transformer import (
     ZImageTransformer2DModel,
 )
 from vllm_omni.diffusion.profiler.diffusion_pipeline_profiler import DiffusionPipelineProfilerMixin
+from vllm_omni.diffusion.utils.tf_utils import get_transformer_config_kwargs
 from vllm_omni.diffusion.worker.request_batch import DiffusionRequestBatch
 from vllm_omni.model_executor.model_loader.weight_utils import (
     download_weights_from_hf_specific,
@@ -225,7 +226,9 @@ class ZImagePipeline(nn.Module, DiffusionPipelineProfilerMixin, SupportsComponen
 
         vae_config = DistributedAutoencoderKL.load_config(model, subfolder="vae", local_files_only=local_files_only)
         self.vae = DistributedAutoencoderKL.from_config(vae_config).to(self._execution_device)
-        self.transformer = ZImageTransformer2DModel(quant_config=od_config.quantization_config)
+        transformer_kwargs = get_transformer_config_kwargs(od_config.tf_model_config, ZImageTransformer2DModel)
+        transformer_kwargs["quant_config"] = od_config.quantization_config
+        self.transformer = ZImageTransformer2DModel(**transformer_kwargs)
         self.tokenizer = AutoTokenizer.from_pretrained(model, subfolder="tokenizer", local_files_only=local_files_only)
 
         # Note: Context parallelism is applied centrally in registry.initialize_model()
