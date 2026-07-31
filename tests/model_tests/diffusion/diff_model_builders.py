@@ -242,14 +242,15 @@ def tiny_flux2_builder() -> str:
     )
 
 
-def _shrink_ovis_text_encoder_config(config: dict, hidden_size: int = 64) -> dict:
+def _shrink_qwen3_text_encoder_config(config: dict, hidden_size: int = 64) -> dict:
     config["num_hidden_layers"] = 2
     config["intermediate_size"] = 64
     config["hidden_size"] = hidden_size
     config["num_attention_heads"] = 2
     config["num_key_value_heads"] = 2
     config["head_dim"] = hidden_size // config["num_attention_heads"]
-    config["layer_types"] = config["layer_types"][:2]
+    if "layer_types" in config:
+        config["layer_types"] = config["layer_types"][:2]
     return config
 
 
@@ -258,7 +259,7 @@ def tiny_ovis_image_builder() -> str:
         "OvisImagePipeline",
         "AIDC-AI/Ovis-Image-7B",
         transform={
-            "text_encoder": _shrink_ovis_text_encoder_config,
+            "text_encoder": _shrink_qwen3_text_encoder_config,
             "transformer": partial(_shrink_dit_rope_config, num_single_layers=2, joint_attention_dim=64),
         },
     )
@@ -300,5 +301,31 @@ def tiny_glm_image_builder() -> str:
             "text_encoder": _shrink_t5_text_encoder_config,
             "vision_language_encoder": _shrink_glm_vision_language_encoder_config,
             "transformer": _shrink_glm_image_transformer_config,
+        },
+    )
+
+
+def _shrink_z_image_transformer_config(config: dict, cap_feat_dim: int = 64) -> dict:
+    target_heads = 4
+    target_head_dim = 32
+    old_head_dim = config["dim"] / config["n_heads"]
+    factor = old_head_dim / target_head_dim
+    config["n_layers"] = 2
+    config["n_refiner_layers"] = 2
+    config["n_heads"] = target_heads
+    config["n_kv_heads"] = target_heads
+    config["dim"] = target_heads * target_head_dim
+    config["cap_feat_dim"] = cap_feat_dim
+    config["axes_dims"] = [int(d / factor) for d in config["axes_dims"]]
+    return config
+
+
+def tiny_z_image_builder() -> str:
+    return build_tiny_from_configs(
+        "ZImagePipeline",
+        "Tongyi-MAI/Z-Image-Turbo",
+        transform={
+            "text_encoder": _shrink_qwen3_text_encoder_config,
+            "transformer": _shrink_z_image_transformer_config,
         },
     )

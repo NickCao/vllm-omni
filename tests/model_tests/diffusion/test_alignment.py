@@ -22,7 +22,6 @@ pytestmark = [pytest.mark.diffusion, pytest.mark.cpu, pytest.mark.core_model]
 # for adding a new tiny model builder and corresponding entry in DIFFUSION_TEST_SETTINGS.
 EXCLUDED_MODELS = [
     "QwenImageLayeredPipeline",
-    "ZImagePipeline",
     "WanPipeline",
     "WanVACEPipeline",
     "LTX2DistilledPipeline",

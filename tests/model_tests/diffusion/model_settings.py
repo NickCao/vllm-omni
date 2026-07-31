@@ -104,4 +104,9 @@ DIFFUSION_TEST_SETTINGS = {
         builder=diff_model_builders.tiny_glm_image_builder,
         supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE, DiffusionTasks.IMAGE_TO_IMAGE],
     ),
+    "ZImagePipeline": DiffusionModelTestOpts(
+        model="Tongyi-MAI/Z-Image-Turbo",
+        builder=diff_model_builders.tiny_z_image_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE],
+    ),
 }
