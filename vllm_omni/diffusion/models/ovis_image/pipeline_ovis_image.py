@@ -204,7 +204,8 @@ class OvisImagePipeline(nn.Module, CFGParallelMixin, DiffusionPipelineProfilerMi
         )
 
         transformer_kwargs = get_transformer_config_kwargs(od_config.tf_model_config, OvisImageTransformer2DModel)
-        self.transformer = OvisImageTransformer2DModel(**transformer_kwargs, od_config=od_config)
+        transformer_kwargs["od_config"] = od_config
+        self.transformer = OvisImageTransformer2DModel(**transformer_kwargs)
 
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
 

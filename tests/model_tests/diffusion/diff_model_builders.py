@@ -262,3 +262,43 @@ def tiny_ovis_image_builder() -> str:
             "transformer": partial(_shrink_dit_rope_config, num_single_layers=2, joint_attention_dim=64),
         },
     )
+
+
+def _shrink_glm_vision_language_encoder_config(config: dict) -> dict:
+    # vllm_omni's GlmImagePipeline never loads this component (only the diffusers-native
+    # class needs it to build a valid pipeline); shrink it purely to keep the tiny model
+    # small on disk, without worrying about internal shape invariants.
+    text_config = config["text_config"]
+    old_head_dim = text_config["hidden_size"] / text_config["num_attention_heads"]
+    text_config["num_hidden_layers"] = 2
+    text_config["hidden_size"] = 64
+    text_config["intermediate_size"] = 64
+    text_config["num_attention_heads"] = 2
+    text_config["num_key_value_heads"] = 2
+    factor = old_head_dim / (64 / 2)
+    mrope_section = text_config["rope_parameters"]["mrope_section"]
+    text_config["rope_parameters"]["mrope_section"] = [round(d / factor) for d in mrope_section]
+    config["vision_config"]["depth"] = 2
+    config["vision_config"]["hidden_size"] = 64
+    config["vision_config"]["intermediate_size"] = 64
+    config["vision_config"]["num_heads"] = 2
+    return config
+
+
+def _shrink_glm_image_transformer_config(config: dict) -> dict:
+    config["num_layers"] = 2
+    config["attention_head_dim"] = 32
+    config["num_attention_heads"] = 4
+    return config
+
+
+def tiny_glm_image_builder() -> str:
+    return build_tiny_from_configs(
+        "GlmImagePipeline",
+        "zai-org/GLM-Image",
+        transform={
+            "text_encoder": _shrink_t5_text_encoder_config,
+            "vision_language_encoder": _shrink_glm_vision_language_encoder_config,
+            "transformer": _shrink_glm_image_transformer_config,
+        },
+    )

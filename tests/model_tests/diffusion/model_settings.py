@@ -99,4 +99,9 @@ DIFFUSION_TEST_SETTINGS = {
         builder=diff_model_builders.tiny_hunyuan_video_15_builder,
         supported_tasks=[DiffusionTasks.TEXT_TO_VIDEO],
     ),
+    "GlmImagePipeline": DiffusionModelTestOpts(
+        model="zai-org/GLM-Image",
+        builder=diff_model_builders.tiny_glm_image_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE, DiffusionTasks.IMAGE_TO_IMAGE],
+    ),
 }
