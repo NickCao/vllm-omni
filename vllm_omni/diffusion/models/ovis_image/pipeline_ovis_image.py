@@ -42,6 +42,7 @@ from vllm_omni.diffusion.model_loader.hub_prefetch import from_pretrained_with_p
 from vllm_omni.diffusion.models.interface import SupportsComponentDiscovery
 from vllm_omni.diffusion.models.ovis_image.ovis_image_transformer import OvisImageTransformer2DModel
 from vllm_omni.diffusion.profiler.diffusion_pipeline_profiler import DiffusionPipelineProfilerMixin
+from vllm_omni.diffusion.utils.tf_utils import get_transformer_config_kwargs
 from vllm_omni.diffusion.worker.request_batch import DiffusionRequestBatch
 from vllm_omni.model_executor.model_loader.weight_utils import download_weights_from_hf_specific
 
@@ -202,7 +203,8 @@ class OvisImagePipeline(nn.Module, CFGParallelMixin, DiffusionPipelineProfilerMi
             model, subfolder="tokenizer", local_files_only=local_files_only
         )
 
-        self.transformer = OvisImageTransformer2DModel(od_config=od_config)
+        transformer_kwargs = get_transformer_config_kwargs(od_config.tf_model_config, OvisImageTransformer2DModel)
+        self.transformer = OvisImageTransformer2DModel(**transformer_kwargs, od_config=od_config)
 
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
 
