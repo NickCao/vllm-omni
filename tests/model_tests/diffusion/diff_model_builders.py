@@ -329,3 +329,26 @@ def tiny_z_image_builder() -> str:
             "transformer": _shrink_z_image_transformer_config,
         },
     )
+
+
+def _shrink_sd3_transformer_config(config: dict) -> dict:
+    config["num_layers"] = 2
+    config["attention_head_dim"] = 32
+    config["num_attention_heads"] = 4
+    # MMDiT joint attention requires the projected caption embedding to match
+    # the main (image) stream width, unlike Flux's separate joint_attention_dim.
+    config["caption_projection_dim"] = config["num_attention_heads"] * config["attention_head_dim"]
+    return config
+
+
+def tiny_sd3_builder() -> str:
+    return build_tiny_from_configs(
+        "StableDiffusion3Pipeline",
+        "stabilityai/stable-diffusion-3.5-medium",
+        transform={
+            "text_encoder": _shrink_clip_text_encoder_config,
+            "text_encoder_2": _shrink_clip_text_encoder_config,
+            "text_encoder_3": _shrink_t5_text_encoder_config,
+            "transformer": _shrink_sd3_transformer_config,
+        },
+    )

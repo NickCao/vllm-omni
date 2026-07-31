@@ -109,4 +109,9 @@ DIFFUSION_TEST_SETTINGS = {
         builder=diff_model_builders.tiny_z_image_builder,
         supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE],
     ),
+    "StableDiffusion3Pipeline": DiffusionModelTestOpts(
+        model="stabilityai/stable-diffusion-3.5-medium",
+        builder=diff_model_builders.tiny_sd3_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE],
+    ),
 }
