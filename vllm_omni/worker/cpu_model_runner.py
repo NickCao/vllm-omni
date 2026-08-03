@@ -16,3 +16,10 @@ class OmniCPUModelRunner(CPUModelRunner, OmniGPUModelRunner):
         if self.compilation_config.mode == CompilationMode.NONE:
             return
         super().warming_up_model()
+
+    def _should_use_async_omni_output(self) -> bool:
+        # Omni async output overlaps a GPU->CPU copy with the next step's
+        # GPU kernels via a dedicated CUDA stream/event. There is no such
+        # overlap opportunity on CPU, and building it would unconditionally
+        # touch torch.cuda APIs that don't work without a CUDA device.
+        return False
