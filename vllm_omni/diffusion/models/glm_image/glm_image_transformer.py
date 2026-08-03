@@ -763,7 +763,7 @@ class GlmImageFeedForward(nn.Module):
                     approximate=approximate,
                     bias=bias,
                     quant_config=quant_config,
-                    prefix=f"{prefix}.net.0",
+                    prefix=f"{prefix}.net.0.proj",
                 ),
                 nn.Identity(),
                 RowParallelLinear(

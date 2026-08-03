@@ -106,7 +106,7 @@ class WanFeedForward(nn.Module):
             approximate="tanh",
             bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.net_0" if prefix else "net_0",
+            prefix=f"{prefix}.net_0.proj" if prefix else "net_0.proj",
         )
         # Placeholder for weight loading compatibility
         self.net_1 = nn.Identity()

@@ -236,7 +236,7 @@ class LTX2FeedForward(nn.Module):
                 approximate="tanh",
                 bias=bias,
                 quant_config=quant_config,
-                prefix=f"{prefix}.net.0" if prefix else "net.0",
+                prefix=f"{prefix}.net.0.proj" if prefix else "net.0.proj",
             ),
             dropout_layer,
             RowParallelLinear(
