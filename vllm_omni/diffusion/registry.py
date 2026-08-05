@@ -291,6 +291,11 @@ _DIFFUSION_MODELS = {
         "pipeline_diffusers_adapter",
         "DiffusersAdapterPipeline",
     ),
+    "ModularDiffusersAdapterPipeline": (
+        "diffusers_adapter",
+        "pipeline_modular_diffusers_adapter",
+        "ModularDiffusersAdapterPipeline",
+    ),
     "HiDreamImagePipeline": (
         "hidream_image",
         "pipeline_hidream_image",

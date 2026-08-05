@@ -555,6 +555,8 @@ def resolve_model_class_name(model: str | None, diffusion_load_format: str = "de
         return model_index.get("_class_name")
     if diffusion_load_format == "diffusers":
         return "DiffusersAdapterPipeline"
+    if diffusion_load_format == "modular_diffusers":
+        return "ModularDiffusersAdapterPipeline"
 
     # Other models: map model_type / architecture from config.json.
     try:
@@ -739,7 +741,8 @@ class OmniDiffusionConfig:
     custom_pipeline_args: dict[str, Any] | None = None
 
     # Diffusion model loading format
-    # "default", "custom_pipeline", "dummy", "diffusers" (HF diffusers adapter)
+    # "default", "custom_pipeline", "dummy", "diffusers" (HF diffusers adapter),
+    # "modular_diffusers" (diffusers ModularPipeline adapter)
     diffusion_load_format: str = "default"
 
     # Diffusers adapter kwargs
@@ -1025,10 +1028,12 @@ class OmniDiffusionConfig:
         elif self.max_cpu_loras < 1:
             raise ValueError("max_cpu_loras must be >= 1 for diffusion LoRA")
 
-        if self.diffusion_load_format != "diffusers" and (self.diffusers_load_kwargs or self.diffusers_call_kwargs):
+        if self.diffusion_load_format not in ("diffusers", "modular_diffusers") and (
+            self.diffusers_load_kwargs or self.diffusers_call_kwargs
+        ):
             raise ValueError(
                 "diffusers_load_kwargs and diffusers_call_kwargs are only "
-                "valid together with diffusion_load_format=diffusers"
+                "valid together with diffusion_load_format=diffusers or modular_diffusers"
             )
 
         # when use hf offline, replace model to local model path
@@ -1148,6 +1153,8 @@ class OmniDiffusionConfig:
         # Default model_class_name for diffusers adapter
         if self.model_class_name is None and self.diffusion_load_format == "diffusers":
             self.model_class_name = "DiffusersAdapterPipeline"
+        if self.model_class_name is None and self.diffusion_load_format == "modular_diffusers":
+            self.model_class_name = "ModularDiffusersAdapterPipeline"
 
         try:
             config_dict = get_hf_file_to_dict("model_index.json", self.model)
@@ -1158,7 +1165,7 @@ class OmniDiffusionConfig:
 
                 # Skip transformer config loading for diffusers adapter
                 # (non-DiT models don't have a separate transformer folder/config)
-                if self.diffusion_load_format == "diffusers":
+                if self.diffusion_load_format in ("diffusers", "modular_diffusers"):
                     self.set_tf_model_config(TransformerConfig())
                     try:
                         diffusers_pipeline_cls_name = config_dict["_class_name"]
@@ -1182,7 +1189,7 @@ class OmniDiffusionConfig:
         except (AttributeError, OSError, ValueError, FileNotFoundError):
             # Skip transformer config loading for diffusers adapter
             # (non-DiT models don't have a separate transformer folder/config)
-            if self.diffusion_load_format == "diffusers":
+            if self.diffusion_load_format in ("diffusers", "modular_diffusers"):
                 self.set_tf_model_config(TransformerConfig())
                 logger.warning(
                     "Could not find valid model_index.json per diffusers format. "

@@ -35,6 +35,9 @@ from vllm_omni.diffusion.model_loader.checkpoint_adapters import (
     get_checkpoint_adapter,
 )
 from vllm_omni.diffusion.models.diffusers_adapter.pipeline_diffusers_adapter import DiffusersAdapterPipeline
+from vllm_omni.diffusion.models.diffusers_adapter.pipeline_modular_diffusers_adapter import (
+    ModularDiffusersAdapterPipeline,
+)
 from vllm_omni.diffusion.offloader.module_collector import ModuleDiscovery
 from vllm_omni.diffusion.registry import initialize_model
 
@@ -393,8 +396,8 @@ class DiffusersPipelineLoader:
                             "DLO+AllGather active but model does not support mmap: loading weights via regular loader."
                         )
                     logger.debug("Loading weights on %s ...", load_device)
-                    if load_format == "diffusers":
-                        cast(DiffusersAdapterPipeline, model).load_weights()
+                    if load_format in ("diffusers", "modular_diffusers"):
+                        model.load_weights()
                     else:
                         self.load_weights(model)
                     self._process_weights_after_loading(model, target_device)
@@ -616,6 +619,8 @@ class DiffusersPipelineLoader:
                     model = initialize_model(self.od_config)
                 elif load_format == "diffusers":
                     model = DiffusersAdapterPipeline(od_config=self.od_config, device=target_device)
+                elif load_format == "modular_diffusers":
+                    model = ModularDiffusersAdapterPipeline(od_config=self.od_config, device=target_device)
                 else:
                     raise ValueError(f"Unknown load_format: {load_format}")
         return model
