@@ -2,25 +2,33 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Diffusers backend adapter for vLLM-Omni.
 
-Provides a black-box wrapper around any 🤗 Diffusers pipeline, enabling
-vLLM-Omni to directly serve Diffusers models with near-zero per-model code.
+Loads any model with modular block definitions in diffusers as a
+``ModularPipeline`` and drives the denoising loop one step at a time,
+enabling step-wise execution (continuous batching) and component-level
+CPU offload via ``SupportsComponentDiscovery``.
 
-The adapter delegates full pipeline execution to diffusers' ``__call__()``.
-It does NOT support:
-- CFG parallel (diffusers handles CFG via guidance_scale internally)
-- Sequence parallel (requires model-specific attention surgery)
-- TeaCache / Cache-DiT (requires hooking into transformer blocks)
-- Step-wise execution (continuous batching)
+Does not support CFG parallel, sequence parallel, or
+TeaCache / Cache-DiT.
 """
 
+from __future__ import annotations
+
+import copy
 import inspect
 import logging
 import re
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import torch
+from diffusers import ModelMixin
+from diffusers.modular_pipelines import (
+    LoopSequentialPipelineBlocks,
+    ModularPipeline,
+    PipelineState,
+)
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from torch import nn
+from transformers import PreTrainedModel
 
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.models.diffusers_adapter.pipeline_utils import BasePipelineUtils, get_pipeline_utils
@@ -33,6 +41,14 @@ from vllm_omni.diffusion.profiler.diffusion_pipeline_profiler import DiffusionPi
 from vllm_omni.diffusion.worker.request_batch import DiffusionRequestBatch
 from vllm_omni.inputs.data import OmniPromptType, OmniTextPrompt
 from vllm_omni.platforms import current_omni_platform
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from diffusers.modular_pipelines import BlockState
+
+    from vllm_omni.diffusion.worker.input_batch import InputBatch
+    from vllm_omni.diffusion.worker.utils import StepRequestState
 
 logger = logging.getLogger(__name__)
 
@@ -52,25 +68,28 @@ _DIFFUSERS_CONFIG_LOAD_KWARGS = {
 
 
 class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
-    """Black-box adapter that delegates full pipeline execution to a diffusers pipeline.
+    """Adapter that wraps a ``ModularPipeline`` for vLLM-Omni serving.
 
-    Usage::
+    Loads the model via diffusers' modular-pipeline framework, partitions
+    its blocks into pre-denoise / denoise-loop / post-denoise stages, and
+    implements the ``SupportsStepExecution`` protocol by calling
+    ``loop_step()`` one iteration at a time.
 
-        adapter = DiffusersAdapterPipeline(od_config=od_config)
-        adapter.load_weights()  # calls DiffusionPipeline.from_pretrained()
-        output = adapter.forward(req)
-
-    Step-wise execution is explicitly rejected — diffusers encapsulates the
-    full denoising loop internally. Use native pipelines for continuous
-    batching mode.
+    Component roles (DiT, encoder, VAE) are explicitly discovered and
+    declared via ``SupportsComponentDiscovery`` for offload support.
     """
 
     supports_request_batch = False
-    supports_step_execution: bool = False
+    supports_step_execution: bool = True
+
+    _dit_modules: ClassVar[list[str]] = []
+    _encoder_modules: ClassVar[list[str]] = []
+    _vae_modules: ClassVar[list[str]] = []
+    _resident_modules: ClassVar[list[str]] = []
 
     def __init__(self, *, od_config: OmniDiffusionConfig, device: torch.device | None = None):
         super().__init__()
-        self._pipeline: DiffusionPipeline
+        self._pipeline: ModularPipeline
         self._accept_call_kwargs: set[str] | None = None  # None to accept all kwargs
         self.od_config = od_config
         self.device = device
@@ -78,20 +97,23 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
         self._pipeline_utils: BasePipelineUtils = BasePipelineUtils()
         self._raise_unsupported_features()
 
+        self._pre_denoise_block_names: list[str] = []
+        self._denoise_prep_blocks: list[tuple[str, Any]] = []
+        self._denoise_block: LoopSequentialPipelineBlocks | None = None
+        self._denoise_post_blocks: list[tuple[str, Any]] = []
+        self._post_denoise_block_names: list[str] = []
+
         self.setup_diffusion_pipeline_profiler(
             enable_diffusion_pipeline_profiler=od_config.enable_diffusion_pipeline_profiler,
             profiler_targets=["forward"],
         )
-        if od_config.enable_diffusion_pipeline_profiler:
-            logger.info("Profiling enabled for DiffusersAdapterPipeline. Only 'forward' is supported.")
 
     # ------------------------------------------------------------------
     # Weight loading
     # ------------------------------------------------------------------
 
     def load_weights(self) -> None:
-        """Load the diffusers pipeline via ``DiffusionPipeline.from_pretrained()``."""
-
+        """Load the model as a ``ModularPipeline`` and partition its blocks."""
         model_id = self.od_config.model
         dtype = self.od_config.dtype
 
@@ -111,77 +133,336 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
             else {}
         )
         apply_diffusers_quantization_config(self.od_config, load_kwargs, component_names)
-        logger.debug(f"Loading diffusers pipeline with kwargs: {load_kwargs}")
 
-        self._pipeline = DiffusionPipeline.from_pretrained(model_id, **load_kwargs)
-        self._pipeline_utils.apply_post_load_updates(self._pipeline, self.od_config)
+        pipe = ModularPipeline.from_pretrained(model_id, **load_kwargs)
+        pipe.load_components(**load_kwargs)
+        self._pipeline_utils.apply_post_load_updates(pipe, self.od_config)
+        pipe.to(self.device)
 
-        self._pipeline.to(self.device)
+        self._pipeline = pipe
+        self._partition_blocks(pipe)
+        self._discover_components(pipe)
+
+        logger.info(
+            "Loaded modular pipeline %s with step-wise execution enabled.",
+            pipe.__class__.__name__,
+        )
 
         # Cache __call__kwargs signature introspection for later input validation
-        self._accept_call_kwargs = set(inspect.signature(self._pipeline.__call__).parameters.keys())
+        self._accept_call_kwargs = set(inspect.signature(pipe.__call__).parameters.keys())
 
-        # CPU offloading
-        if self.od_config.enable_layerwise_offload:
-            self._pipeline.enable_sequential_cpu_offload()
-        elif self.od_config.enable_cpu_offload:
-            self._pipeline.enable_model_cpu_offload()
+        # CPU offloading is handled by vllm-omni's offload framework
+        # (sequential_backend / distributed_layerwise_backend) using the
+        # component roles declared in _dit_modules / _encoder_modules /
+        # _vae_modules, not by diffusers' own offload methods.
 
         # VAE slicing and tiling: try-catch because not all models have VAE
         if self.od_config.vae_use_slicing:
             try:
-                self._pipeline.enable_vae_slicing()
+                pipe.enable_vae_slicing()
             except Exception as e:
-                logger.warning(
-                    f"Failed to enable VAE slicing for diffusers pipeline {self._pipeline.__class__.__name__}: {e}"
-                )
+                logger.warning("Failed to enable VAE slicing: %s", e)
         if self.od_config.vae_use_tiling:
             try:
-                self._pipeline.enable_vae_tiling()
+                pipe.enable_vae_tiling()
             except Exception as e:
-                logger.warning(
-                    f"Failed to enable VAE tiling for diffusers pipeline {self._pipeline.__class__.__name__}: {e}"
-                )
+                logger.warning("Failed to enable VAE tiling: %s", e)
 
         # Attention backend
         self._set_attention_backend()
 
+    def _partition_blocks(self, pipe: ModularPipeline) -> None:
+        """Partition blocks into stages for step-wise execution.
+
+        Splits at two levels:
+        1. Top-level: blocks before/after ``denoise`` (text_encoder, decode, etc.)
+        2. Inside ``denoise``: resolves the default workflow via
+           ``get_execution_blocks()``, then splits around the
+           ``LoopSequentialPipelineBlocks`` (the actual denoise loop).
+        """
+        blocks = pipe.blocks
+        sub_blocks = blocks.sub_blocks
+
+        if "denoise" not in sub_blocks:
+            raise ValueError(
+                f"ModularPipeline {pipe.__class__.__name__} has no 'denoise' sub-block. "
+                f"Available sub-blocks: {list(sub_blocks.keys())}"
+            )
+
+        # Resolve the denoise ConditionalPipelineBlocks to a flat sequence
+        denoise_top = sub_blocks["denoise"]
+        resolved = denoise_top.get_execution_blocks()
+        resolved_subs = resolved.sub_blocks
+
+        loop_name = None
+        for name, block in resolved_subs.items():
+            if isinstance(block, LoopSequentialPipelineBlocks):
+                loop_name = name
+                break
+
+        if loop_name is None:
+            raise TypeError(
+                f"No LoopSequentialPipelineBlocks found inside 'denoise' block. "
+                f"Resolved sub-blocks: {list(resolved_subs.keys())}"
+            )
+
+        # Top-level split
+        pre_top, post_top = [], []
+        before_denoise = True
+        for name in sub_blocks:
+            if name == "denoise":
+                before_denoise = False
+                continue
+            (pre_top if before_denoise else post_top).append(name)
+
+        # Denoise-internal split around the loop
+        denoise_prep = []
+        denoise_post = []
+        before_loop = True
+        for name, block in resolved_subs.items():
+            if name == loop_name:
+                before_loop = False
+                continue
+            (denoise_prep if before_loop else denoise_post).append((name, block))
+
+        self._pre_denoise_block_names = pre_top
+        self._denoise_prep_blocks = denoise_prep
+        self._denoise_block = resolved_subs[loop_name]
+        self._denoise_post_blocks = denoise_post
+        self._post_denoise_block_names = post_top
+        logger.info(
+            "Partitioned blocks: top_pre=%s, denoise_prep=%s, loop=%s, denoise_post=%s, top_post=%s",
+            pre_top,
+            [n for n, _ in denoise_prep],
+            loop_name,
+            [n for n, _ in denoise_post],
+            post_top,
+        )
+
+    def _discover_components(self, pipe: ModularPipeline) -> None:
+        """Populate ``_dit_modules``, ``_encoder_modules``, ``_vae_modules``.
+
+        Components are categorized by their base class:
+        - ``transformers.PreTrainedModel`` subclasses are encoders.
+        - ``diffusers.ModelMixin`` subclasses with "Autoencoder" or "VQ"
+          in the class name are VAEs.
+        - All other ``diffusers.ModelMixin`` subclasses are DiT modules.
+        """
+        dit: list[str] = []
+        enc: list[str] = []
+        vae: list[str] = []
+
+        for name in pipe._component_specs:
+            component = getattr(pipe, name, None)
+            if component is None or not isinstance(component, nn.Module):
+                continue
+            path = f"_pipeline.{name}"
+            if isinstance(component, PreTrainedModel):
+                enc.append(path)
+            elif isinstance(component, ModelMixin):
+                cls_name = type(component).__name__
+                if "Autoencoder" in cls_name or "VQ" in cls_name:
+                    vae.append(path)
+                else:
+                    dit.append(path)
+
+        self._dit_modules = dit
+        self._encoder_modules = enc
+        self._vae_modules = vae
+        logger.info(
+            "Discovered components: dit=%s, encoder=%s, vae=%s",
+            dit,
+            enc,
+            vae,
+        )
+
     # ------------------------------------------------------------------
-    # Step-wise execution — explicitly rejected
+    # Step-wise execution
     # ------------------------------------------------------------------
 
-    def prepare_encode(self, **_: Any) -> Any:
-        raise NotImplementedError(
-            "Step-wise execution is not yet supported with the diffusers backend. "
-            "Use a native pipeline for continuous batching mode."
-        )
+    def prepare_encode(
+        self,
+        state: StepRequestState,
+        **kwargs: Any,
+    ) -> StepRequestState:
+        """Run all blocks up to (but not including) the denoise loop.
 
-    def denoise_step(self, **_: Any) -> torch.Tensor | None:
-        raise NotImplementedError(
-            "Step-wise execution is not yet supported with the diffusers backend. "
-            "Use a native pipeline for continuous batching mode."
-        )
+        This includes top-level pre-denoise blocks (text_encoder,
+        vae_encoder) and the denoise block's input-prep sub-blocks
+        (text_inputs, prepare_latents, set_timesteps, rope_inputs).
+        """
+        pipe = self._pipeline
+        top_blocks = pipe.blocks.sub_blocks
 
-    def step_scheduler(self, **_: Any) -> None:
-        raise NotImplementedError(
-            "Step-wise execution is not yet supported with the diffusers backend. "
-            "Use a native pipeline for continuous batching mode."
-        )
+        prompt, negative_prompt = self._extract_step_prompts(state)
+        sampling = state.sampling
 
-    def post_decode(self, **_: Any) -> Any:
-        raise NotImplementedError(
-            "Step-wise execution is not yet supported with the diffusers backend. "
-            "Use a native pipeline for continuous batching mode."
-        )
+        call_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "height": sampling.height,
+            "width": sampling.width,
+            "num_inference_steps": sampling.num_inference_steps or 50,
+            "guidance_scale": sampling.guidance_scale if sampling.guidance_scale_provided else None,
+        }
+        if negative_prompt is not None:
+            call_kwargs["negative_prompt"] = negative_prompt
+        if sampling.seed is not None:
+            call_kwargs["generator"] = torch.Generator(
+                device=sampling.generator_device,
+            ).manual_seed(sampling.seed)
+
+        call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
+
+        # Populate PipelineState: start with declared defaults for inputs
+        # that have them (num_images_per_prompt=1, num_inference_steps=50,
+        # etc.), then override with user-provided kwargs.
+        pipeline_state = PipelineState()
+        for param in pipe.blocks.inputs:
+            if param.name is not None and param.default is not None:
+                pipeline_state.set(param.name, param.default, param.kwargs_type)
+        for key, value in call_kwargs.items():
+            pipeline_state.set(key, value)
+
+        # Run pre-denoise top-level blocks (text_encoder, vae_encoder, etc.)
+        for block_name in self._pre_denoise_block_names:
+            block = top_blocks[block_name]
+            pipe, pipeline_state = block(pipe, pipeline_state)
+
+        # Run the denoise block's input-prep sub-blocks, stopping before
+        # the LoopSequentialPipelineBlocks (the actual denoise loop).
+        for name, block in self._denoise_prep_blocks:
+            pipe, pipeline_state = block(pipe, pipeline_state)
+
+        denoise_block_state = self._denoise_block.get_block_state(pipeline_state)
+
+        state.latents = denoise_block_state.latents
+        state.timesteps = denoise_block_state.timesteps
+        state.step_index = 0
+        state.scheduler = copy.deepcopy(pipe.scheduler)
+
+        if hasattr(denoise_block_state, "prompt_embeds"):
+            state.prompt_embeds = denoise_block_state.prompt_embeds
+        if hasattr(denoise_block_state, "prompt_embeds_mask"):
+            state.prompt_embeds_mask = denoise_block_state.prompt_embeds_mask
+        if hasattr(denoise_block_state, "negative_prompt_embeds"):
+            state.negative_prompt_embeds = denoise_block_state.negative_prompt_embeds
+        if hasattr(denoise_block_state, "negative_prompt_embeds_mask"):
+            state.negative_prompt_embeds_mask = denoise_block_state.negative_prompt_embeds_mask
+        if hasattr(denoise_block_state, "img_shapes"):
+            state.img_shapes = denoise_block_state.img_shapes
+        if hasattr(denoise_block_state, "txt_seq_lens"):
+            state.txt_seq_lens = denoise_block_state.txt_seq_lens
+
+        state.extra["_block_state_attrs"] = {
+            k: v for k, v in denoise_block_state.__dict__.items() if k not in ("latents", "timesteps")
+        }
+        state.extra["_pipeline_state"] = pipeline_state
+
+        return state
+
+    def denoise_step(
+        self,
+        input_batch: InputBatch,
+        *,
+        states: Sequence[StepRequestState] | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor | None:
+        """Run one iteration of the denoise loop via ``loop_step``."""
+        pipe = self._pipeline
+        denoise = self._denoise_block
+
+        state = states[0] if states else None
+        if state is None:
+            return None
+
+        from diffusers.modular_pipelines import BlockState
+
+        saved_attrs = dict(state.extra.get("_block_state_attrs", {}))
+        saved_attrs["latents"] = input_batch.latents
+        saved_attrs["timesteps"] = state.timesteps
+        saved_attrs.setdefault("num_inference_steps", len(state.timesteps))
+        saved_attrs.setdefault("additional_cond_kwargs", {})
+        block_state = BlockState(**saved_attrs)
+
+        i = state.step_index
+        t = state.timesteps[i]
+
+        pipe, block_state = denoise.loop_step(pipe, block_state, i=i, t=t)
+
+        state.extra["_updated_latents"] = block_state.latents
+        return getattr(block_state, "noise_pred", block_state.latents)
+
+    def step_scheduler(
+        self,
+        state: StepRequestState,
+        noise_pred: torch.Tensor | None,
+        **kwargs: Any,
+    ) -> None:
+        """Advance step state after ``denoise_step``.
+
+        The scheduler already ran inside ``loop_step``, so we sync the
+        updated latents and advance the step index.
+        """
+        updated_latents = state.extra.pop("_updated_latents", None)
+        if updated_latents is not None:
+            state.latents = updated_latents
+        state.step_index += 1
+
+    def post_decode(
+        self,
+        state: StepRequestState,
+        **kwargs: Any,
+    ) -> DiffusionOutput:
+        """Run post-loop denoise blocks and post-denoise top-level blocks."""
+        pipe = self._pipeline
+        top_blocks = pipe.blocks.sub_blocks
+
+        pipeline_state: PipelineState = state.extra.pop("_pipeline_state")
+        self._denoise_block.set_block_state(pipeline_state, self._rebuild_block_state(state))
+
+        # Run denoise-internal post-loop blocks (e.g. after_denoise)
+        for _name, block in self._denoise_post_blocks:
+            pipe, pipeline_state = block(pipe, pipeline_state)
+
+        # Run top-level post-denoise blocks (e.g. decode)
+        for block_name in self._post_denoise_block_names:
+            block = top_blocks[block_name]
+            pipe, pipeline_state = block(pipe, pipeline_state)
+
+        for key in ("images", "frames", "audios"):
+            val = pipeline_state.get(key)
+            if val is not None:
+                return DiffusionOutput(output=val)
+
+        return DiffusionOutput(output=pipeline_state.get("latents"))
+
+    def _rebuild_block_state(self, state: StepRequestState) -> BlockState:
+        """Reconstruct a ``BlockState`` from ``StepRequestState`` for decode."""
+        from diffusers.modular_pipelines import BlockState
+
+        attrs = state.extra.get("_block_state_attrs", {})
+        return BlockState(latents=state.latents, **attrs)
+
+    def _extract_step_prompts(self, state: StepRequestState) -> tuple[str, str | None]:
+        """Extract prompt and negative prompt from a StepRequestState."""
+        prompt = ""
+        negative_prompt = None
+        if state.prompt is not None:
+            if isinstance(state.prompt, str):
+                prompt = state.prompt
+            elif isinstance(state.prompt, dict):
+                prompt = state.prompt.get("prompt", "")
+                negative_prompt = state.prompt.get("negative_prompt")
+        return prompt, negative_prompt
 
     # ------------------------------------------------------------------
-    # Forward pass
+    # Forward pass (black-box __call__ delegation)
     # ------------------------------------------------------------------
 
     def forward(self, req: DiffusionRequestBatch) -> DiffusionOutput:
-        """Full delegation to diffusers ``pipeline.__call__()``."""
+        """Full delegation to ``ModularPipeline.__call__()``."""
         kwargs = self._build_call_kwargs(req)
-        logger.debug(f"Calling diffusers pipeline with kwargs: {kwargs}")
+        logger.debug("Calling diffusers pipeline with kwargs: %s", kwargs)
 
         with torch.inference_mode():
             output = self._pipeline(**kwargs)  # pyright: ignore[reportCallIssue]
@@ -488,8 +769,8 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
         """Convert diffusers pipeline output to ``DiffusionOutput``.
 
         Diffusers output types:
-        - ``ImagePipelineOutput(images=...)`` — text2img, img2img
-        - ``VideoPipelineOutput(frames=...)`` — text2vid, img2vid
+        - ``ImagePipelineOutput(images=...)`` -- text2img, img2img
+        - ``VideoPipelineOutput(frames=...)`` -- text2vid, img2vid
         """
         from vllm_omni.diffusion.data import DiffusionOutput
 
