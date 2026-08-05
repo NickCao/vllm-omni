@@ -19,7 +19,7 @@ import re
 from typing import Any, cast
 
 import torch
-from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+from diffusers.modular_pipelines import ComponentsManager, ModularPipeline
 from torch import nn
 
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
@@ -35,20 +35,6 @@ from vllm_omni.inputs.data import OmniPromptType, OmniTextPrompt
 from vllm_omni.platforms import current_omni_platform
 
 logger = logging.getLogger(__name__)
-
-_DIFFUSERS_CONFIG_LOAD_KWARGS = {
-    "cache_dir",
-    "dduf_entries",
-    "force_download",
-    "local_dir",
-    "local_dir_use_symlinks",
-    "local_files_only",
-    "proxies",
-    "revision",
-    "subfolder",
-    "token",
-    "user_agent",
-}
 
 
 class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
@@ -70,8 +56,9 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
 
     def __init__(self, *, od_config: OmniDiffusionConfig, device: torch.device | None = None):
         super().__init__()
-        self._pipeline: DiffusionPipeline
-        self._accept_call_kwargs: set[str] | None = None  # None to accept all kwargs
+        self._manager: ComponentsManager
+        self._pipeline: ModularPipeline
+
         self.od_config = od_config
         self.device = device
         self._capabilities: dict[str, Any] = {}
@@ -90,7 +77,7 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
     # ------------------------------------------------------------------
 
     def load_weights(self) -> None:
-        """Load the diffusers pipeline via ``DiffusionPipeline.from_pretrained()``."""
+        """Load the diffusers pipeline via ``ModularPipeline.from_pretrained()``."""
 
         model_id = self.od_config.model
         dtype = self.od_config.dtype
@@ -105,39 +92,46 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
         pipeline_class_name = pipeline_class.__name__ if pipeline_class is not None else None
         self._pipeline_utils = get_pipeline_utils(pipeline_class_name)
         self._pipeline_utils.update_load_kwargs(self.od_config, load_kwargs)
-        component_names = (
-            self._load_diffusers_component_names(model_id, load_kwargs)
-            if self.od_config.quantization_config is not None and "quantization_config" not in load_kwargs
-            else {}
-        )
-        apply_diffusers_quantization_config(self.od_config, load_kwargs, component_names)
         logger.debug(f"Loading diffusers pipeline with kwargs: {load_kwargs}")
 
-        self._pipeline = DiffusionPipeline.from_pretrained(model_id, **load_kwargs)
+        self._manager = ComponentsManager()
+        self._pipeline = ModularPipeline.from_pretrained(
+            model_id,
+            components_manager=self._manager,
+            **load_kwargs,
+        )
+
+        if self.od_config.quantization_config is not None and "quantization_config" not in load_kwargs:
+            apply_diffusers_quantization_config(self.od_config, load_kwargs, self._pipeline.components)
+
+        if self.od_config.enable_cpu_offload:
+            self._manager.enable_auto_cpu_offload(device=self.device)
+
+        if self.od_config.enable_layerwise_offload:
+            from accelerate import cpu_offload
+
+            for model in self._pipeline.components.values():
+                if isinstance(model, torch.nn.Module):
+                    cpu_offload(model, self.device)
+
+        self._pipeline.load_components(**load_kwargs)
+
+        if not self.od_config.enable_cpu_offload:
+            self._pipeline.to(self.device)
+
         self._pipeline_utils.apply_post_load_updates(self._pipeline, self.od_config)
 
-        self._pipeline.to(self.device)
-
-        # Cache __call__kwargs signature introspection for later input validation
-        self._accept_call_kwargs = set(inspect.signature(self._pipeline.__call__).parameters.keys())
-
-        # CPU offloading
-        if self.od_config.enable_layerwise_offload:
-            self._pipeline.enable_sequential_cpu_offload()
-        elif self.od_config.enable_cpu_offload:
-            self._pipeline.enable_model_cpu_offload()
-
         # VAE slicing and tiling: try-catch because not all models have VAE
-        if self.od_config.vae_use_slicing:
+        if self.od_config.vae_use_slicing and hasattr(self._pipeline, "vae"):
             try:
-                self._pipeline.enable_vae_slicing()
+                self._pipeline.vae.enable_slicing()
             except Exception as e:
                 logger.warning(
                     f"Failed to enable VAE slicing for diffusers pipeline {self._pipeline.__class__.__name__}: {e}"
                 )
-        if self.od_config.vae_use_tiling:
+        if self.od_config.vae_use_tiling and hasattr(self._pipeline, "vae"):
             try:
-                self._pipeline.enable_vae_tiling()
+                self._pipeline.vae.enable_tiling()
             except Exception as e:
                 logger.warning(
                     f"Failed to enable VAE tiling for diffusers pipeline {self._pipeline.__class__.__name__}: {e}"
@@ -230,24 +224,6 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
                     "Diffusers quantization config, or omit dduf_file for vLLM-Omni "
                     "quantization conversion."
                 )
-
-    def _load_diffusers_component_names(
-        self,
-        model_id: str,
-        load_kwargs: dict[str, Any],
-    ) -> dict[str, Any]:
-        config_load_kwargs = {k: load_kwargs[k] for k in _DIFFUSERS_CONFIG_LOAD_KWARGS if k in load_kwargs}
-        pipeline_config = DiffusionPipeline.load_config(model_id, **config_load_kwargs)
-        return {
-            name: value
-            for name, value in pipeline_config.items()
-            if (
-                isinstance(value, list)
-                and len(value) > 0
-                and value[0] is not None
-                and (name not in load_kwargs or load_kwargs[name] is not None)
-            )
-        }
 
     # ------------------------------------------------------------------
     # Wrap settings, inputs, and outputs
@@ -343,39 +319,13 @@ class DiffusersAdapterPipeline(nn.Module, DiffusionPipelineProfilerMixin):
 
         # Merge user-provided call kwargs from stage/CLI defaults.
         # Load time defaults -> input kwargs (prompts, neg prompts, images...) -> request-time sampling params
-        kwargs: dict[str, Any] = {}
-
-        # Load time defaults
-        for key, value in self.od_config.diffusers_call_kwargs.items():
-            if self._accept_call_kwargs is None or key in self._accept_call_kwargs:
-                kwargs[key] = value
-            else:
-                logger.warning(
-                    f"Skipping unsupported diffusers pipeline __call__ argument `{key}` from "
-                    f"diffusers_call_kwargs. Check out the documentation of {self._pipeline.__class__.__name__}."
-                )
-
-        # Input kwargs
-        for key, value in input_kwargs.items():
-            if self._accept_call_kwargs is None or key in self._accept_call_kwargs:
-                kwargs[key] = value
-            else:
-                logger.warning(
-                    f"Skipping unsupported diffusers pipeline __call__ argument `{key}` from prompt input."
-                    f"Check out the documentation of {self._pipeline.__class__.__name__}."
-                )
-
-        # Request-time sampling params
-        for key, value in sampling.__dict__.items():
-            if value is None:
-                continue
-            if self._accept_call_kwargs is None or key in self._accept_call_kwargs:
-                kwargs[key] = value
+        kwargs: dict[str, Any] = self.od_config.diffusers_call_kwargs | input_kwargs | sampling.__dict__
 
         # Special format fields in sampling params
         if output_type := sampling.output_type or self.od_config.output_type:
             kwargs["output_type"] = output_type
 
+        # FIXME
         if (num_outputs_per_prompt := sampling.num_outputs_per_prompt) > 0:
             # In diffusers, they are num_images_per_prompt, num_videos_per_prompt, etc.
             for key in self._accept_call_kwargs or ():
