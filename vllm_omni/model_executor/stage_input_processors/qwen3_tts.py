@@ -153,7 +153,8 @@ def talker2code2wav_async_chunk(
         adaptive_delta_min,
     ) = transfer_manager._adaptive_parsed
 
-    # Config or per-request override takes priority over dynamic IC.
+    # Configured/per-request IC suppresses dynamic IC in non-adaptive mode;
+    # adaptive mode deliberately selects its own initial chunk size.
     initial_chunk_size, has_per_request_override = per_request_initial_chunk_size_override(
         request, configured_initial_chunk_size
     )
