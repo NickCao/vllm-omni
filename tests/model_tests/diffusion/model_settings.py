@@ -84,4 +84,19 @@ DIFFUSION_TEST_SETTINGS = {
         builder=diff_model_builders.tiny_qwen_image_edit_plus_builder,
         supported_tasks=[DiffusionTasks.IMAGE_TO_IMAGE],
     ),
+    "WanVACEPipeline": DiffusionModelTestOpts(
+        model="Wan-AI/Wan2.1-VACE-1.3B-diffusers",
+        builder=diff_model_builders.tiny_wan21_vace_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_VIDEO],
+    ),
+    "WanPipeline": DiffusionModelTestOpts(
+        model="Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        builder=diff_model_builders.tiny_wan_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_VIDEO],
+    ),
+    "WanImageToVideoPipeline": DiffusionModelTestOpts(
+        model="Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+        builder=diff_model_builders.tiny_wan_image_to_video_builder,
+        supported_tasks=[DiffusionTasks.IMAGE_TO_VIDEO],
+    ),
 }

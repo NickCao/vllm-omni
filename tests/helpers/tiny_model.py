@@ -101,9 +101,17 @@ def build_tiny_from_configs(
     init_dict, _, _ = pipeline_cls.extract_init_dict(config_dict)
 
     # Pop non-component entries (optional pipeline kwargs like is_distilled),
-    # same as DiffusionPipeline.from_pretrained lines 345-350
+    # mirroring DiffusionPipeline.from_pretrained including its
+    # `_optional_components` guard (needed for pipelines like WanVACEPipeline
+    # that list a real component as optional).
     _, optional_kwargs = DiffusionPipeline._get_signature_keys(pipeline_cls)
-    init_kwargs = {k: init_dict.pop(k) for k in optional_kwargs if k in init_dict}
+    optional_components = set(getattr(pipeline_cls, "_optional_components", []))
+    init_kwargs = {k: init_dict.pop(k) for k in optional_kwargs if k in init_dict and k not in optional_components}
+
+    # Drop components declared as `[null, null]` (unused by this checkpoint
+    # variant), same as upstream -- otherwise the loop below tries to
+    # instantiate them and crashes.
+    init_dict = {k: v for k, v in init_dict.items() if v[0] is not None}
 
     with (
         patch.object(ModelMixin, "from_pretrained", classmethod(_diffusers_from_config)),
