@@ -10,6 +10,11 @@ edit_uri: edit/main/docs/
 # Copyright
 copyright: Copyright &copy; 2026 vLLM-Omni Team
 
+# Single source of truth for the pinned upstream vLLM release. Referenced in
+# docs via the {{vllm_version}} token, substituted by hooks/version_vars.py.
+extra:
+  vllm_version: "0.27.0"
+
 # Theme
 theme:
   name: material
@@ -60,6 +65,7 @@ hooks:
   - docs/mkdocs/hooks/url_schemes.py
   - docs/mkdocs/hooks/generate_examples.py
   - docs/mkdocs/hooks/generate_argparse.py
+  - docs/mkdocs/hooks/version_vars.py
 
 # Exclude include files from navigation warnings
 exclude_docs: |
