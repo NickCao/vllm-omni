@@ -75,7 +75,6 @@ EXCLUDED_MODELS = [
     "DiffusersAdapterPipeline",
     "HiDreamImagePipeline",
     "DreamZeroPipeline",
-    "StableDiffusionXLPipeline",
     "Gr00tN1d7Pipeline",
     "Pi0Pipeline",
     "SoulXSingerPipeline",
