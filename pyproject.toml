@@ -44,6 +44,7 @@ dev = [
     "pytest-xdist==3.8.0",
     "websockets==16.1",
     "pytest-subtests==0.15.0",
+    "filelock>=3.16.1,<4",
     "datasets==3.6.0",
     "mypy==1.11.1",
     "pre-commit==4.0.1",
