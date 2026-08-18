@@ -41,6 +41,7 @@ dev = [
     "pytest-cov==7.1.0",
     "pytest-mock==3.15.1",
     "pytest-shard==0.1.2",
+    "pytest-xdist==3.8.0",
     "websockets==16.1",
     "pytest-subtests==0.15.0",
     "datasets==3.6.0",
@@ -242,7 +243,8 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "--strict-markers",
-    "--strict-config"
+    "--strict-config",
+    "--dist=loadgroup"
 ]
 markers = [
     # ci/cd required
@@ -291,6 +293,7 @@ markers = [
     "sp: Sequence parallelism tests (multi-GPU)",
     "slow: Slow tests (may skip in quick CI)",
     "benchmark: Benchmark tests",
+    "xdist: xdist-parallelizable tests",
 ]
 filterwarnings = [
     "ignore:.*does not have '__test__' attribute.*:UserWarning",
