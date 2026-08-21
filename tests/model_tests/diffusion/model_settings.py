@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 from tests.model_tests.diffusion import diff_model_builders
 from tests.model_tests.diffusion.config_types import (
     DiffusionAccs,
@@ -83,5 +86,10 @@ DIFFUSION_TEST_SETTINGS = {
         model="Qwen/Qwen-Image-Edit-2511",
         builder=diff_model_builders.tiny_qwen_image_edit_plus_builder,
         supported_tasks=[DiffusionTasks.IMAGE_TO_IMAGE],
+    ),
+    "Krea2Pipeline": DiffusionModelTestOpts(
+        model="krea/Krea-2-Turbo",
+        builder=diff_model_builders.tiny_krea2_builder,
+        supported_tasks=[DiffusionTasks.TEXT_TO_IMAGE],
     ),
 }

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 """
 Tests for alignment between _DIFFUSION_MODELS and DIFFUSION_TEST_SETTINGS; if
 tests in this file are failing, you are probably adding a new model, and need
@@ -53,7 +56,6 @@ EXCLUDED_MODELS = [
     "ErnieImagePipeline",
     "NextStep11Pipeline",
     "FluxDMD2Pipeline",
-    "Krea2Pipeline",
     "QwenImageDMD2Pipeline",
     "OmniGen2Pipeline",
     "HeliosPipeline",

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 """Reusable utility for building tiny diffusion models with random weights.
 
 Mirrors the component loading loop in DiffusionPipeline.from_pretrained,
@@ -33,7 +36,7 @@ def build_tiny_from_configs(
     pipeline_name: str,
     model_id: str,
     configs_dir: str | Path | None = None,
-    transform: dict[str, Callable[[dict], dict]] | None = None,
+    transform: dict[str | None, Callable[[dict], dict]] | None = None,
 ) -> str:
     """Build a tiny diffusion model with random weights.
 
@@ -51,7 +54,8 @@ def build_tiny_from_configs(
             exactly the shrink it needs (layer counts, and any component-
             internal width that isn't read by another component), including
             keeping sibling config fields in sync (e.g. layer_types matching
-            num_hidden_layers).
+            num_hidden_layers). The key `None` transforms the top-level
+            model_index.json dict instead, before pipeline-class resolution.
 
     Returns:
         Path to the saved tiny model directory with safetensors weights.
@@ -96,6 +100,8 @@ def build_tiny_from_configs(
     # can vendor just one component without also needing its own model_index.json.
     vendored_index = config_dir is not None and (config_dir / "model_index.json").exists()
     config_dict = DiffusionPipeline.load_config(config_dir if vendored_index else model_id)
+    if None in transform:
+        config_dict = transform[None](dict(config_dict))
     pipeline_cls = _get_pipeline_class(DiffusionPipeline, config=config_dict)
 
     init_dict, _, _ = pipeline_cls.extract_init_dict(config_dict)
