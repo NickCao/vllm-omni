@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 """IPC utilities for transferring large tensors via POSIX shared memory.
 
@@ -11,6 +11,7 @@ serialised through the queue.
 
 from __future__ import annotations
 
+import weakref
 from typing import Any
 
 import numpy as np
@@ -20,6 +21,116 @@ from vllm_omni.diffusion.data import DiffusionOutput
 
 _SHM_TENSOR_THRESHOLD = 1_000_000  # 1 MB
 DIFFUSION_RPC_RESULT_ENVELOPE = "diffusion_rpc_result"
+
+
+class _ShmHandle(dict):
+    """A ``dict`` subclass so SHM handles can hold a ``weakref`` safety net.
+
+    Plain ``dict`` instances cannot be weakly referenced. Subclassing gets a
+    ``__weakref__`` slot for free while still satisfying every ``isinstance(val,
+    dict)`` check elsewhere in this module and in pickling across the worker/
+    consumer process boundary.
+    """
+
+
+def _safe_unlink_shm(name: str) -> None:
+    """Unlink a segment by name, tolerating an already-unlinked/missing one.
+
+    Used both by the normal consume path (``_array_from_shm``) and by the
+    GC safety net below, so double-unlinking (happy path runs first, then the
+    finalizer fires when the handle is later dropped) is expected and benign.
+    """
+    from multiprocessing import shared_memory
+
+    try:
+        shm = shared_memory.SharedMemory(name=name)
+    except FileNotFoundError:
+        return
+    try:
+        shm.close()
+        shm.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _track_shm_handle_for_gc(handle: dict[str, Any]) -> None:
+    """Attach a GC-triggered safety net that unlinks the segment if ``handle``
+    is ever dropped (error path, stale-response discard, cancellation, or any
+    future code path) before the normal consumer explicitly unpacks it.
+
+    No-op unless ``handle`` is a ``_ShmHandle`` (only SHM-backed handles need
+    this; a plain nested dict from user data must not be weakly referenced).
+    """
+    if not isinstance(handle, _ShmHandle):
+        return
+    name = handle.get("name")
+    if not name:
+        return
+    weakref.finalize(handle, _safe_unlink_shm, name)
+
+
+def _register_shm_handles_in_container(val: object) -> None:
+    """Recurse through a plain container shape looking for ``_ShmHandle``s.
+
+    Mirrors the shapes ``_unpack_if_shm_handle`` walks (a bare handle dict, or
+    nested dict/list/tuple containers around one), but only registers the GC
+    safety net instead of reconstructing tensors.
+    """
+    if isinstance(val, _ShmHandle):
+        _track_shm_handle_for_gc(val)
+    elif isinstance(val, dict):
+        for value in val.values():
+            _register_shm_handles_in_container(value)
+    elif isinstance(val, (list, tuple)):
+        for item in val:
+            _register_shm_handles_in_container(item)
+
+
+def _register_shm_handles_in_diffusion_output(output: DiffusionOutput) -> None:
+    _register_shm_handles_in_container(output.output)
+    _register_shm_handles_in_container(output.trajectory_latents)
+    _register_shm_handles_in_container(output.trajectory_timesteps)
+    _register_shm_handles_in_container(output.trajectory_log_probs)
+
+
+def register_shm_handles_for_gc(val: object) -> None:
+    """Attach the GC safety net to every SHM handle reachable from ``val``.
+
+    Call this as early as possible after a message crosses the worker/
+    consumer process boundary (right after dequeue, before any validation or
+    discard logic) so a segment is reclaimed eventually even if nothing ever
+    calls ``unpack_diffusion_output_shm`` on this particular message (e.g. a
+    stale response discarded by wave-id validation, or a future/only-if-
+    someone-waits code path). Mirrors the object shapes
+    ``unpack_diffusion_output_shm`` handles, plus ``AsyncDiffusionOutput``'s
+    ``.output`` field used by the async result pump.
+    """
+    if isinstance(val, DiffusionOutput):
+        _register_shm_handles_in_diffusion_output(val)
+        return
+
+    if isinstance(val, dict) and "dp_rank" in val and "output" in val:
+        register_shm_handles_for_gc(val["output"])
+        return
+
+    if _is_rpc_result_envelope(val) and isinstance(val, dict):
+        register_shm_handles_for_gc(val.get("result"))
+        return
+
+    output = getattr(val, "output", None)
+    if isinstance(output, DiffusionOutput):
+        _register_shm_handles_in_diffusion_output(output)
+
+    result = getattr(val, "result", None)
+    if isinstance(result, DiffusionOutput):
+        _register_shm_handles_in_diffusion_output(result)
+    elif result is not None:
+        register_shm_handles_for_gc(result)
+
+    runner_outputs = getattr(val, "runner_outputs", None)
+    if isinstance(runner_outputs, list):
+        for runner_output in runner_outputs:
+            register_shm_handles_for_gc(runner_output)
 
 
 def _array_to_shm(array: np.ndarray) -> dict[str, Any]:
@@ -34,12 +145,14 @@ def _array_to_shm(array: np.ndarray) -> dict[str, Any]:
     shm = shared_memory.SharedMemory(create=True, size=nbytes)
     shm_array = np.ndarray(array.shape, dtype=array.dtype, buffer=shm.buf[:nbytes])
     np.copyto(shm_array, array)
-    handle = {
-        "name": shm.name,
-        "shape": list(array.shape),
-        "numpy_dtype": str(array.dtype),
-        "nbytes": nbytes,
-    }
+    handle = _ShmHandle(
+        {
+            "name": shm.name,
+            "shape": list(array.shape),
+            "numpy_dtype": str(array.dtype),
+            "nbytes": nbytes,
+        }
+    )
     shm.close()
     return handle
 
@@ -57,7 +170,10 @@ def _array_from_shm(handle: dict[str, Any]) -> np.ndarray:
         ).copy()
     finally:
         shm.close()
-        shm.unlink()
+        try:
+            shm.unlink()
+        except FileNotFoundError:
+            pass
     return array
 
 

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -22,7 +25,11 @@ from vllm.v1.executor.multiproc_executor import set_multiprocessing_worker_envs
 
 from vllm_omni.diffusion.data import SHUTDOWN_MESSAGE, AsyncDiffusionOutput, AsyncOutputKind, DiffusionOutput
 from vllm_omni.diffusion.executor.abstract import DiffusionExecutor
-from vllm_omni.diffusion.ipc import DIFFUSION_RPC_RESULT_ENVELOPE, unpack_diffusion_output_shm
+from vllm_omni.diffusion.ipc import (
+    DIFFUSION_RPC_RESULT_ENVELOPE,
+    register_shm_handles_for_gc,
+    unpack_diffusion_output_shm,
+)
 from vllm_omni.diffusion.sched.request_scheduler import build_request_batch_sampling_params_key
 from vllm_omni.diffusion.utils.future_utils import try_set_exception, try_set_result
 from vllm_omni.diffusion.worker import WorkerProc
@@ -189,7 +196,9 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
                 chunk_timeout = min(_DEQUEUE_TIMEOUT_S, remaining)
             if not self.od_config.step_execution:
                 try:
-                    return self._sync_result_buffer.get(timeout=chunk_timeout)
+                    response = self._sync_result_buffer.get(timeout=chunk_timeout)
+                    register_shm_handles_for_gc(response)
+                    return response
                 except queue.Empty:
                     if self._is_failed or self._closed:
                         raise EngineDeadError()
@@ -199,7 +208,9 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
                 if queue_to_read is None:
                     raise RuntimeError("Result queue is closed")
                 try:
-                    return queue_to_read.dequeue(timeout=chunk_timeout)
+                    response = queue_to_read.dequeue(timeout=chunk_timeout)
+                    register_shm_handles_for_gc(response)
+                    return response
                 except (TimeoutError, zmq.error.Again):
                     if self._is_failed:
                         raise EngineDeadError()
@@ -280,6 +291,15 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
                 expected_wave_id,
                 method,
             )
+            # A discarded response may still carry an unresolved SHM tensor
+            # handle (e.g. a slow diffusion result that arrives after its
+            # request was aborted and a new wave started). Unpacking it here
+            # forces _array_from_shm's unlink() so the segment isn't orphaned
+            # in /dev/shm (see #6462).
+            try:
+                unpack_diffusion_output_shm(response)
+            except Exception:
+                logger.warning("SHM cleanup failed for discarded stale response", exc_info=True)
             discards += 1
             response = self._dequeue_one_with_failure_polling(deadline, method, result_mq)
         raise TimeoutError(
@@ -847,6 +867,7 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
         while not self._pump_stop.is_set():
             try:
                 msg = result_mq.dequeue(timeout=1.0)
+                register_shm_handles_for_gc(msg)
             except TimeoutError:
                 if self._is_failed:
                     break
