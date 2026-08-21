@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 from __future__ import annotations
 
@@ -530,24 +530,35 @@ class DiffusionEngine:
             postprocess_output=postprocess_output,
         )
 
+    def _has_pending_work(self) -> bool:
+        """Whether the busy loop has anything to do right now.
+
+        Single source of truth for both the idle-wait gate and the
+        post-wait "nothing to do" check below, so a new source of pending
+        work only ever needs to be added in one place. Missing one here
+        previously let an aborted request's finalization sit unswept
+        whenever nothing else was in flight (see #6462).
+        """
+        return (
+            self.scheduler.has_requests()
+            or self.scheduler.has_pending_finalization()
+            or not self._rpc_queue.empty()
+            or not self.abort_queue.empty()
+        )
+
     def _busy_loop(self):
         while not self.stop_event.is_set():
             self._process_aborts_queue()
             self._process_rpc_queue()
 
             with self._cv:
-                while (
-                    not self.scheduler.has_requests()
-                    and self._rpc_queue.empty()
-                    and self.abort_queue.empty()
-                    and not self.stop_event.is_set()
-                ):
+                while not self._has_pending_work() and not self.stop_event.is_set():
                     self._cv.wait(timeout=1.0)
 
                 if self.stop_event.is_set():
                     break
 
-                if not self.scheduler.has_requests():
+                if not self._has_pending_work():
                     # Only RPC / abort work pending; loop back to drain it.
                     continue
 
@@ -556,7 +567,17 @@ class DiffusionEngine:
                 sched_output = self.scheduler.schedule()
 
             if sched_output.is_empty:
-                self._emit_finished_outputs(sched_output.finished_req_ids, None)
+                # finished_req_ids can still contain an id whose request was
+                # already finalized this same cycle by update_from_output
+                # (added to the scheduler's finished set mid-round, after
+                # schedule() last cleared it): filter to ids still tracked,
+                # mirroring _finalize_update_from_output's own guard, so a
+                # stale id is never resurfaced for finalization twice.
+                pending_finished_ids = {
+                    rid for rid in sched_output.finished_req_ids if self.scheduler.get_request_state(rid) is not None
+                }
+                if pending_finished_ids:
+                    self._emit_finished_outputs(pending_finished_ids, None)
                 continue
 
             try:

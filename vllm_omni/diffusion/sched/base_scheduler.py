@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 from __future__ import annotations
 
@@ -224,6 +224,20 @@ class BaseScheduler(ABC):
 
     def has_requests(self) -> bool:
         return bool(self._waiting or self._running)
+
+    def has_pending_finalization(self) -> bool:
+        """Whether a request was finished (e.g. aborted) but not yet surfaced
+        through ``schedule()``'s ``finished_req_ids`` snapshot.
+
+        A request removed from both ``_waiting`` and ``_running`` (e.g. by
+        ``finish_requests`` on abort) makes ``has_requests()`` false even
+        though its ``SchedulerRequestState`` is still held pending
+        finalization. Callers must treat this the same as ``has_requests()``
+        when deciding whether to keep idling, or that state is never popped
+        until an unrelated future request happens to call ``schedule()``
+        again (see #6462).
+        """
+        return bool(self._finished_req_ids)
 
     def num_waiting_requests(self) -> int:
         return len(self._waiting)
