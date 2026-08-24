@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 import asyncio
 import re
 from types import SimpleNamespace
@@ -233,6 +236,38 @@ def test_abort_propagates_engine_errors_without_popping_state():
         with pytest.raises(RuntimeError, match="orchestrator abort failed"):
             await omni.abort("req-1")
         assert "req-1-bbbb" in omni.request_states
+
+    asyncio.run(run())
+
+
+@pytest.mark.cpu
+def test_abort_evicts_consumed_metric_messages_entry():
+    """Regression for vllm-omni#6462.
+
+    An aborted request must drop its ``_consumed_metric_messages`` entry
+    alongside ``request_states``. Otherwise every abort retains a per-request
+    ``set[int]`` in the frontend process (``api_server`` PID 1 in the report),
+    growing host memory ~linearly for the process lifetime.
+
+    Completion goes through ``_log_summary_and_cleanup`` which already pops
+    both dicts (``omni_base.py``); the abort path used to pop only
+    ``request_states``.
+    """
+
+    async def run():
+        omni = get_async_omni_instance(
+            fake_abort_request=get_fake_abort(aborted_request_batches=[]),
+        )
+        omni._consumed_metric_messages = {}
+
+        req_id = "abort-me-abcdef"
+        omni.request_states[req_id] = SimpleNamespace(external_request_id=req_id)
+        omni._consumed_metric_messages[req_id] = {12345, 67890}
+
+        await omni._abort([req_id])
+
+        assert req_id not in omni.request_states
+        assert req_id not in omni._consumed_metric_messages
 
     asyncio.run(run())
 

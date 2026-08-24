@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 """
 AsyncOmni - Refactored async orchestrator using AsyncOmniEngine.
 
@@ -1115,8 +1118,11 @@ class AsyncOmni(EngineClient, OmniBase):
         backend binding/request teardown. Orchestrator abort errors propagate.
         """
         await self.engine.abort_async(request_ids)
+        consumed_by_request = getattr(self, "_consumed_metric_messages", None)
         for rid in request_ids:
             state = self.request_states.pop(rid, None)
+            if consumed_by_request is not None:
+                consumed_by_request.pop(rid, None)
             input_stream_task = getattr(state, "input_stream_task", None)
             if input_stream_task is not None and not input_stream_task.done():
                 input_stream_task.cancel()

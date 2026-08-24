@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 from __future__ import annotations
 
 import copy
@@ -209,7 +212,10 @@ class Omni(OmniBase):
     def abort(self, request_id: str | Iterable[str]) -> None:
         request_ids = [request_id] if isinstance(request_id, str) else list(request_id)
         self.engine.abort(request_ids)
+        consumed_by_request = getattr(self, "_consumed_metric_messages", None)
         for req_id in request_ids:
             self.request_states.pop(req_id, None)
+            if consumed_by_request is not None:
+                consumed_by_request.pop(req_id, None)
         if self.log_stats:
             logger.info("[Omni] Aborted request(s) %s", ",".join(request_ids))
