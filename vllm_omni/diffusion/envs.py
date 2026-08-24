@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 # Copyright 2024 xDiT team.
 # Adapted from
 # https://github.com/xdit-project/xDiT/blob/main/xfuser/envs.py
@@ -8,17 +11,11 @@ from typing import TYPE_CHECKING, Any
 from vllm_omni.platforms import current_omni_platform
 
 if TYPE_CHECKING:
-    MASTER_ADDR: str = ""
-    MASTER_PORT: int | None = None
     CUDA_HOME: str | None = None
     LOCAL_RANK: int = 0
 
 environment_variables: dict[str, Callable[[], Any]] = {
     # ================== Runtime Env Vars ==================
-    # used in distributed environment to determine the master address
-    "MASTER_ADDR": lambda: os.getenv("MASTER_ADDR", ""),
-    # used in distributed environment to manually set the communication port
-    "MASTER_PORT": lambda: int(os.getenv("MASTER_PORT", "0")) if "MASTER_PORT" in os.environ else None,
     # path to cudatoolkit home directory, under which should be bin, include,
     # and lib directories.
     "CUDA_HOME": lambda: os.environ.get("CUDA_HOME", None),

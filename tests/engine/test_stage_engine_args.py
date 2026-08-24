@@ -110,11 +110,6 @@ def _stable_engine_arg_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(platform, "device_name", "cpu", raising=False)
     monkeypatch.setattr(platform, "device_type", "cpu", raising=False)
     monkeypatch.setattr(platform, "is_rocm", lambda: False)
-    monkeypatch.setattr(
-        OmniDiffusionConfig,
-        "_resolve_master_port",
-        lambda config: config.master_port or 29500,
-    )
 
     def _resolve_test_worker(engine_args):
         worker_type = engine_args.get("worker_type")

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 """
 Diffusion Worker for vLLM-Omni.
@@ -247,9 +247,9 @@ class DiffusionWorker:
         world_size = self.od_config.num_gpus
         rank = self.rank
 
-        # Set environment variables for distributed initialization
-        os.environ["MASTER_ADDR"] = "localhost"
-        os.environ["MASTER_PORT"] = str(self.od_config.master_port)
+        # LOCAL_RANK/RANK/WORLD_SIZE are read directly by other ambient consumers
+        # (e.g. omni_connectors KV/local-rank utilities) independent of the
+        # rendezvous below, so they still need to be real process env vars.
         os.environ["LOCAL_RANK"] = str(self.local_rank)
         os.environ["RANK"] = str(rank)
         os.environ["WORLD_SIZE"] = str(world_size)
@@ -281,7 +281,13 @@ class DiffusionWorker:
             set_forward_context(vllm_config=self.vllm_config, omni_diffusion_config=self.od_config),
             set_current_vllm_config(self.vllm_config),
         ):
-            init_distributed_environment(world_size=world_size, rank=rank)
+            assert self.od_config.distributed_init_method is not None
+            init_distributed_environment(
+                world_size=world_size,
+                rank=rank,
+                local_rank=self.local_rank,
+                distributed_init_method=self.od_config.distributed_init_method,
+            )
             logger.info(f"Worker {self.rank}: Initialized device and distributed environment.")
 
             parallel_config = self.od_config.parallel_config
@@ -962,7 +968,7 @@ class WorkerProc:
         self.result_mq_handle = self.result_mq.export_handle()
         logger.info(f"Worker {gpu_id} created result MessageQueue")
 
-        assert od_config.master_port is not None
+        assert od_config.distributed_init_method is not None
 
         # Create worker using WorkerWrapperBase for extension support
         self.worker = self._create_worker(gpu_id, od_config, worker_extension_cls, custom_pipeline_args)

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Tests that parallel_config survives the create_default_diffusion roundtrip.
 
 Regression tests for https://github.com/vllm-project/vllm-omni/issues/1862
@@ -162,8 +162,7 @@ class TestCreateDefaultDiffusion:
         assert od.diffusion_kv_mode is DiffusionKVCacheMode.PAGED_SCHEDULER
         assert od.diffusion_kv_max_rows_per_request == 2
 
-    def test_diffusion_kv_sizing_fields_roundtrip(self, monkeypatch):
-        monkeypatch.setattr(OmniDiffusionConfig, "_resolve_master_port", lambda self: 29500)
+    def test_diffusion_kv_sizing_fields_roundtrip(self):
         od = _roundtrip_diffusion_config(
             model="x",
             kv_cache_memory_bytes=4096,

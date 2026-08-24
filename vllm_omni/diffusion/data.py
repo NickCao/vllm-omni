@@ -4,7 +4,6 @@
 import copy
 import math
 import os
-import random
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields
 from enum import Enum
@@ -29,7 +28,7 @@ from vllm_omni.diffusion.diffusion_kv.config import (
 )
 from vllm_omni.diffusion.lora.manager import LoRABackend
 from vllm_omni.diffusion.model_metadata import get_diffusion_model_metadata
-from vllm_omni.diffusion.utils.network_utils import is_port_available
+from vllm_omni.diffusion.utils.network_utils import get_distributed_init_method
 from vllm_omni.errors import client_error_metadata
 from vllm_omni.quantization import build_quant_config
 
@@ -804,9 +803,9 @@ class OmniDiffusionConfig:
     moba_config_path: str | None = None
     # moba_config: dict[str, Any] = field(default_factory=dict)
 
-    # Master port for distributed inference
-    # TODO: do not hard code
-    master_port: int | None = None
+    # torch.distributed rendezvous for this diffusion worker group's own process
+    # group. Always intra-node; resolved fresh in __post_init__.
+    distributed_init_method: str | None = None
 
     # Worker extension class for custom functionality
     worker_extension_cls: str | None = None
@@ -937,60 +936,6 @@ class OmniDiffusionConfig:
 
         return False
 
-    def _resolve_master_port(self) -> int:
-        """Resolve torch.distributed master port without unnecessary random jitter.
-
-        Precedence:
-        1. ``MASTER_PORT`` environment variable (set by orchestrators for multi-replica launch).
-        2. Explicit ``master_port`` passed at construction time.
-        3. An OS-assigned ephemeral port when neither is provided.
-        """
-        from vllm.utils.network_utils import get_open_port
-
-        from vllm_omni.diffusion import envs
-
-        env_port = envs.MASTER_PORT
-        if env_port is not None:
-            return self.settle_port(env_port, port_inc=37)
-        if self.master_port is not None:
-            return self.settle_port(self.master_port, port_inc=37)
-        return self.settle_port(get_open_port(), port_inc=37)
-
-    def settle_port(self, port: int, port_inc: int = 42, max_attempts: int = 100) -> int:
-        """
-        Find an available port with retry logic.
-
-        Args:
-            port: Initial port to check
-            port_inc: Port increment for each attempt
-            max_attempts: Maximum number of attempts to find an available port
-
-        Returns:
-            An available port number
-
-        Raises:
-            RuntimeError: If no available port is found after max_attempts
-        """
-        attempts = 0
-        original_port = port
-
-        while attempts < max_attempts:
-            if is_port_available(port):
-                if attempts > 0:
-                    logger.info(f"Port {original_port} was unavailable, using port {port} instead")
-                return port
-
-            attempts += 1
-            if port < 60000:
-                port += port_inc
-            else:
-                # Wrap around with randomization to avoid collision
-                port = 5000 + random.randint(0, 1000)
-
-        raise RuntimeError(
-            f"Failed to find available port after {max_attempts} attempts (started from port {original_port})"
-        )
-
     def __post_init__(self):
         if self.diffusion_compile_granularity not in {"regional", "full"}:
             raise ValueError(
@@ -1032,7 +977,7 @@ class OmniDiffusionConfig:
                 "disable need_recv_cache until connector-aware admission is implemented"
             )
 
-        self.master_port = self._resolve_master_port()
+        self.distributed_init_method = get_distributed_init_method()
         self.request_batch_max_wait_ms = float(self.request_batch_max_wait_ms or 0.0)
         if not math.isfinite(self.request_batch_max_wait_ms) or self.request_batch_max_wait_ms < 0:
             raise ValueError(

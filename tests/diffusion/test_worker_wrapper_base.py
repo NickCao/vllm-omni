@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 """
 Unit tests for WorkerWrapperBase class.
@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from pytest_mock import MockerFixture
 
+from vllm_omni.diffusion.utils.network_utils import get_distributed_init_method
 from vllm_omni.diffusion.worker.diffusion_worker import (
     CustomPipelineWorkerExtension,
     DiffusionWorker,
@@ -36,7 +37,7 @@ def mock_od_config(mocker: MockerFixture):
     """Create a mock OmniDiffusionConfig for use in tests."""
     config = mocker.Mock()
     config.num_gpus = 1
-    config.master_port = 12345
+    config.distributed_init_method = get_distributed_init_method()
     config.enable_sleep_mode = False
     config.cache_backend = None
     config.cache_config = None

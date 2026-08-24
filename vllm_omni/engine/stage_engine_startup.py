@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 """Helpers for launching and handshaking omni engine cores."""
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from vllm.v1.engine.utils import (
 )
 from vllm.v1.executor import Executor
 
+from vllm_omni.diffusion.utils.network_utils import get_distributed_init_method
 from vllm_omni.distributed.omni_connectors.utils import initialization
 from vllm_omni.engine import stage_init_utils
 from vllm_omni.engine.stage_init_utils import (
@@ -1498,13 +1502,10 @@ def launch_headless_diffusion_replicas(
     )
 
     def _launch_one(rep_idx: int) -> Any:
-        # Keep torch.distributed ports away from the ZMQ ephemeral range that
-        # OmniMasterServer pre-allocates for sibling headless replicas.
+        # Sibling headless replicas share the same od_config instance, so each
+        # one after the first needs its own rendezvous, not od_config's original.
         if omni_dp_size_local > 1:
-            od_config.master_port = od_config.settle_port(
-                61000 + rep_idx * 100,
-                port_inc=37,
-            )
+            od_config.distributed_init_method = get_distributed_init_method()
         return launch_headless_diffusion_replica(
             model=model,
             od_config=od_config,

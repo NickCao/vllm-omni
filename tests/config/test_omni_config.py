@@ -1251,8 +1251,7 @@ def test_diffusion_quantization_mapping_reaches_terminal_config(monkeypatch):
     )
 
     # Exercise the terminal construction performed by the future typed startup
-    # path without probing ports or loading remote model metadata.
-    monkeypatch.setattr(OmniDiffusionConfig, "_resolve_master_port", lambda _self: 29500)
+    # path without loading remote model metadata.
     monkeypatch.setattr(OmniDiffusionConfig, "enrich_config", lambda _self: None)
     cfg.enrich_config()
 

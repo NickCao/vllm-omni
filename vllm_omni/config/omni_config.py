@@ -666,7 +666,6 @@ class _DiffusionConfigProjection:
     distributed_executor_backend: str | None = None
     dist_timeout: int | None = None
     nccl_port: int | None = None
-    master_port: int | None = None
     scheduler_port: int | None = None
     host: str | None = None
     port: int | None = None
@@ -919,7 +918,6 @@ _DIFFUSION_RUNTIME_CONFIG_FIELDS = frozenset(
         "host",
         "port",
         "nccl_port",
-        "master_port",
         "scheduler_port",
         "worker_extension_cls",
         "enable_stage_verification",
@@ -931,6 +929,9 @@ _DIFFUSION_ONLY_CONFIG_FIELDS = (
 )
 _DIFFUSION_MOVED_SHARED_FIELDS = frozenset(
     {
+        # Always resolved fresh in OmniDiffusionConfig.__post_init__; never
+        # settable through the projection/typed-config layer.
+        "distributed_init_method",
         "parallel_config",
         "num_gpus",
         "log_level",
