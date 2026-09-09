@@ -374,6 +374,13 @@ class RealtimeInputTranslator(RealtimeStateOwner):
                         audio,
                         fmt,
                         sample_rate_hz=sample_rate_hz if isinstance(sample_rate_hz, int | float) else None,
+                        # A native-duplex model negotiates its own required input
+                        # rate at session.update (e.g. PersonaPlex needs exactly
+                        # 24 kHz); the 16 kHz default below is only correct for
+                        # turn-based/server_vad-style models.
+                        target_sample_rate_hz=(
+                            int(self._input_sample_rate_hz) if self._native_input_append else 16_000
+                        ),
                     )
                 except ValueError as exc:
                     await self._send_realtime_payload(

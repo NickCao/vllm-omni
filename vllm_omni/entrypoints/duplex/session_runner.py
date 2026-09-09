@@ -1561,11 +1561,28 @@ class DuplexSessionRunnerMixin:
                     server_vad_config = session.config.server_vad
                     turn_based_server_vad = server_vad_config is not None and not native_input
                     if not turn_based_server_vad:
+                        # A native-duplex model negotiates its own required input
+                        # rate (e.g. PersonaPlex needs exactly 24 kHz); the 16 kHz
+                        # default below is only correct for turn-based/server_vad
+                        # models. The Realtime translator already resolves this at
+                        # session.update (its own convert_input_audio_with_rate call
+                        # uses it too); the native /v1/duplex dialect only has the
+                        # client-declared session.config value to fall back on.
+                        native_target_sample_rate_hz: int | float | None = (
+                            realtime_protocol._input_sample_rate_hz
+                            if realtime_protocol is not None
+                            else session.config.sample_rate_hz
+                        )
                         try:
                             audio, fmt, sample_rate_hz = convert_input_audio_with_rate(
                                 audio,
                                 fmt,
                                 sample_rate_hz=sample_rate_hz,
+                                target_sample_rate_hz=(
+                                    int(native_target_sample_rate_hz)
+                                    if native_input and isinstance(native_target_sample_rate_hz, int | float)
+                                    else 16_000
+                                ),
                             )
                         except ValueError as exc:
                             await emit_event({"type": "error", "error": str(exc), "code": "bad_event"})
