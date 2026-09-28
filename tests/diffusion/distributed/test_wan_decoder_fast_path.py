@@ -146,7 +146,7 @@ def test_fused_level_plumbing_on_cpu(autocast: bool, norm: str) -> None:
 def _sharded_worker(rank: int, world_size: int, port: str, autocast: bool, return_dict, level: str = "exact") -> None:
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = port
-    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    dist.init_process_group("gloo", init_method="env://", rank=rank, world_size=world_size)
     try:
         torch.manual_seed(0)
         reference = _make_vae()
