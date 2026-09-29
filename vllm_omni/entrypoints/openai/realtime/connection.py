@@ -6,9 +6,8 @@ from __future__ import annotations
 import asyncio
 import binascii
 import json
-import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -21,12 +20,13 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionRequest,
     ChatCompletionToolsParam,
 )
+from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
 from vllm.sampling_params import RequestOutputKind, SamplingParams, StructuredOutputsParams
 from vllm.tool_parsers import ToolParserManager
 
 if TYPE_CHECKING:
-    from vllm.inputs import TokensPrompt
+    from vllm.inputs import EngineInput, TokensPrompt
 
 from vllm_omni.entrypoints.async_omni import AsyncOmni
 from vllm_omni.entrypoints.openai.realtime.session import (
@@ -447,37 +447,34 @@ class OpenAIFullDuplexConnection:
             metadata=metadata,
         )
 
-    async def _estimate_total_tokens(
-        self,
-        tools: list | None,
-        *,
-        instructions: str | None = None,
-        items: list[Any] | None = None,
-    ) -> int:
-        t0 = time.monotonic()
-        prompt = await self._build_full_prompt(tools=tools, instructions=instructions, items=items)
-        total = len(prompt["prompt_token_ids"])
-        audio_arrays = prompt.get("multi_modal_data", {}).get("audio", [])
-        if audio_arrays:
-            raw_tok = getattr(self._tokenizer, "tokenizer", self._tokenizer)
-            placeholder_len = len(raw_tok.encode(AUDIO_PLACEHOLDER, add_special_tokens=False))
-            for arr, sr in audio_arrays:
-                total += self._qwen3_omni_audio_token_count(arr.shape[0], sr) - placeholder_len
-        elapsed = time.monotonic() - t0
-        if elapsed > 0.05:
-            logger.warning(
-                "[realtime] _estimate_total_tokens took %.3fs (history=%d items, %d audio segments)",
-                elapsed,
-                len(items if items is not None else self.session.items),
-                len(audio_arrays),
-            )
-        return total
+    async def _render_engine_input(self, prompt: TokensPrompt) -> EngineInput:
+        renderer = self.engine.renderer
+        if renderer is None:
+            raise RuntimeError("Realtime request rendering requires the engine renderer")
 
-    async def _maybe_truncate_history(self, response: _ResolvedResponse) -> bool:
+        tok_params = replace(
+            renderer.default_chat_tok_params,
+            max_total_tokens=None,
+        )
+        (engine_input,) = await renderer.render_cmpl_async([prompt], tok_params)
+        if engine_input.get("prompt_token_ids") is None:
+            raise RuntimeError("Realtime renderer did not return prompt token IDs")
+        return engine_input
+
+    async def _prepare_engine_input_with_auto_truncation(self, response: _ResolvedResponse) -> EngineInput | None:
         s = self.session
         max_model_len = getattr(self.engine.model_config, "max_model_len", None)
+        persistent = response.input is None
+        items: list[Any] = s.items if response.input is None else response.input
+        prompt = await self._build_full_prompt(
+            tools=response.tools,
+            instructions=response.instructions,
+            items=items,
+        )
+        engine_input = await self._render_engine_input(prompt)
+        total = len(engine_input["prompt_token_ids"])
         if not max_model_len:
-            return True
+            return engine_input
 
         truncation = s.config.truncation or "auto"
         ratio = 1.0
@@ -503,22 +500,15 @@ class OpenAIFullDuplexConnection:
             trigger = limit
             target = limit
 
-        persistent = response.input is None
-        items: list[Any] = s.items if response.input is None else response.input
-        total = await self._estimate_total_tokens(
-            response.tools,
-            instructions=response.instructions,
-            items=items,
-        )
         if total <= trigger:
-            return True
+            return engine_input
         if mode == "disabled":
             logger.warning(
                 "[realtime] token budget exceeded (%d/%d) and truncation is disabled -- rejecting response.create",
                 total,
                 limit,
             )
-            return False
+            return None
 
         idx = 0
         while total > target and idx < len(items):
@@ -557,13 +547,15 @@ class OpenAIFullDuplexConnection:
                     )
                 else:
                     del items[remove_idx]
-            total = await self._estimate_total_tokens(
-                response.tools,
+            prompt = await self._build_full_prompt(
+                tools=response.tools,
                 instructions=response.instructions,
                 items=items,
             )
+            engine_input = await self._render_engine_input(prompt)
+            total = len(engine_input["prompt_token_ids"])
 
-        return total <= limit
+        return engine_input if total <= limit else None
 
     async def _handle_response_create(self, event: types.ResponseCreateEvent):
         s = self.session
@@ -582,7 +574,15 @@ class OpenAIFullDuplexConnection:
             await self._send_error(str(exc), "invalid_request_error", event_id=event.event_id)
             return
 
-        if not await self._maybe_truncate_history(response):
+        if s.active_response is not None:
+            await self._cancel_active_response()
+
+        try:
+            engine_input = await self._prepare_engine_input_with_auto_truncation(response)
+        except VLLMValidationError as exc:
+            await self._send_error(str(exc), "invalid_request_error", event_id=event.event_id)
+            return
+        if engine_input is None:
             await self._send_error(
                 "The response input exceeds the model's input token limit",
                 "invalid_request_error",
@@ -599,13 +599,10 @@ class OpenAIFullDuplexConnection:
             )
         )
 
-        if s.active_response is not None:
-            await self._cancel_active_response()
-
         s.active_response = ActiveResponse(response_id=response_id, request_id=f"rt-{response_id}")
 
         self._response_cancel_event.clear()
-        self._response_task = asyncio.create_task(self._run_response(response_id, response))
+        self._response_task = asyncio.create_task(self._run_response(response_id, response, engine_input))
 
     def _response_object(
         self,
@@ -630,7 +627,12 @@ class OpenAIFullDuplexConnection:
             usage=usage,
         )
 
-    async def _run_response(self, response_id: str, response: _ResolvedResponse):
+    async def _run_response(
+        self,
+        response_id: str,
+        response: _ResolvedResponse,
+        engine_input: EngineInput,
+    ):
         s = self.session
         active = s.active_response
         if active is None:
@@ -638,7 +640,7 @@ class OpenAIFullDuplexConnection:
 
         completed = False
         try:
-            await self._run_response_inner(response_id, response, s, active)
+            await self._run_response_inner(response_id, response, s, active, engine_input)
             completed = True
         except asyncio.CancelledError:
             if self._response_cancel_event.is_set():
@@ -716,17 +718,11 @@ class OpenAIFullDuplexConnection:
         except Exception:
             logger.debug("Failed to send failure response.done for %s", response_id, exc_info=True)
 
-    async def _run_response_inner(self, response_id, response, s, active):
+    async def _run_response_inner(self, response_id, response, s, active, engine_input: EngineInput):
         previous_item_id = s.items[-1].id if s.items else None
         modalities = response.modalities
         is_audio = "audio" in modalities
         tools, tool_choice = response.tools, response.tool_choice
-        prompt = await self._build_full_prompt(
-            tools=tools,
-            instructions=response.instructions,
-            items=response.input,
-        )
-
         item_id = _gen_id("item")
         active.item_id = item_id
         output_index = 0
@@ -912,7 +908,7 @@ class OpenAIFullDuplexConnection:
                     thinker_params_configured = True
 
         gen = self.engine.generate(
-            prompt=prompt,
+            prompt=engine_input,
             request_id=active.request_id,
             sampling_params_list=sampling_params_list,
             output_modalities=modalities,
@@ -1613,18 +1609,6 @@ class OpenAIFullDuplexConnection:
             return ""
         raw_tok = getattr(self._tokenizer, "tokenizer", self._tokenizer)
         return raw_tok.decode(token_ids[:tokens_heard], skip_special_tokens=True)
-
-    @staticmethod
-    def _qwen3_omni_audio_token_count(num_samples: int, sample_rate: int) -> int:
-        """Return Qwen3-Omni's expanded token count for an audio segment."""
-        from vllm.model_executor.models.qwen3_omni_moe_thinker import (
-            _get_feat_extract_output_lengths,
-        )
-
-        num_samples_16k = round(num_samples * 16000 / sample_rate)
-        input_lengths = num_samples_16k // 160
-        output_lengths = _get_feat_extract_output_lengths(input_lengths)
-        return int(output_lengths) + 2  # + <|audio_start|> + <|audio_end|>
 
     async def _build_full_prompt(
         self,
