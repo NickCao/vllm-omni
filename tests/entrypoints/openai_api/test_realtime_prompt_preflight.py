@@ -3,50 +3,47 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import base64
+import io
+import wave
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from vllm_omni.entrypoints.openai.realtime.connection import OpenAIFullDuplexConnection, _ResolvedResponse
+from vllm_omni.entrypoints.openai.realtime.connection import (
+    SAMPLE_RATE_HZ,
+    OpenAIFullDuplexConnection,
+    _ResolvedResponse,
+)
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
-@dataclass
-class _FakeTokenizationParams:
-    max_total_tokens: int | None = 128
-    max_output_tokens: int | None = 32
-
-
-class _FakeTokenizer:
-    def apply_chat_template(self, messages: list[dict[str, Any]], **kwargs: Any) -> str:
-        del kwargs
-        return "|".join(message["content"] for message in messages)
-
-    @staticmethod
-    def encode(text: str, *, add_special_tokens: bool) -> list[int]:
-        del add_special_tokens
-        return [0] * (2 * len(text.split("|")) if text else 0)
-
-
 class _FakeRenderer:
-    default_chat_tok_params = _FakeTokenizationParams()
+    def get_tokenizer(self) -> object:
+        return object()
 
     def __init__(self) -> None:
         self.raw_prompt_lengths: list[int] = []
-        self.tokenization_params: list[_FakeTokenizationParams] = []
+        self.tokenization_params: list[Any] = []
         self.engine_inputs: list[dict[str, Any]] = []
+        self.conversations: list[list[dict[str, Any]]] = []
 
-    async def render_cmpl_async(self, prompts: list[Any], tok_params: _FakeTokenizationParams):
-        raw_prompt_length = len(prompts[0]["prompt_token_ids"])
+    async def render_chat_async(
+        self,
+        conversations: list[list[dict[str, Any]]],
+        _chat_params: Any,
+        tok_params: Any,
+    ):
+        self.conversations.append(conversations[0])
+        raw_prompt_length = 2 * len(conversations[0])
         self.raw_prompt_lengths.append(raw_prompt_length)
         self.tokenization_params.append(tok_params)
         # Model-side expansion makes the rendered prompt much longer than its text tokens.
         engine_input = {"prompt_token_ids": [0] * (10 + 20 * raw_prompt_length)}
         self.engine_inputs.append(engine_input)
-        return [engine_input]
+        return conversations, [engine_input]
 
 
 class _FakeWebSocket:
@@ -61,11 +58,29 @@ def _make_connection(
     *, max_model_len: int = 100, websocket: Any = None
 ) -> tuple[OpenAIFullDuplexConnection, _FakeRenderer]:
     renderer = _FakeRenderer()
+    model_config = SimpleNamespace(max_model_len=max_model_len, multimodal_config=None)
+
+    async def preprocess_chat(request: Any, messages: list[dict[str, Any]], **kwargs: Any):
+        tok_params = kwargs.get("tok_params")
+        if tok_params is None:
+            tok_params = request.build_tok_params(model_config)
+        return await renderer.render_chat_async(
+            [messages],
+            kwargs.get("default_template_kwargs"),
+            tok_params,
+        )
+
     connection = OpenAIFullDuplexConnection(
         websocket=websocket,
-        engine=SimpleNamespace(model_config=SimpleNamespace(max_model_len=max_model_len), renderer=renderer),
+        engine=SimpleNamespace(model_config=model_config),
         model_name="test-model",
-        tokenizer=_FakeTokenizer(),
+        chat_handler=SimpleNamespace(
+            renderer=renderer,
+            chat_template=None,
+            chat_template_content_format="auto",
+            _effective_chat_template_kwargs=lambda _request: {},
+            _preprocess_chat=preprocess_chat,
+        ),
     )
     return connection, renderer
 
@@ -102,9 +117,30 @@ async def test_preflight_truncates_by_rendered_token_count() -> None:
     assert renderer.raw_prompt_lengths == [4, 2]
     assert [len(prompt["prompt_token_ids"]) for prompt in renderer.engine_inputs] == [90, 50]
     assert all(params.max_total_tokens is None for params in renderer.tokenization_params)
-    assert all(params.max_output_tokens == 32 for params in renderer.tokenization_params)
+    assert all(params.max_output_tokens == 0 for params in renderer.tokenization_params)
     assert items == [second]
     assert engine_input is renderer.engine_inputs[-1]
+
+
+@pytest.mark.asyncio
+async def test_audio_prompt_uses_standard_chat_audio_content() -> None:
+    audio = b"\x00\x00\x00\x40"
+    connection, renderer = _make_connection(websocket=_FakeWebSocket())
+    connection.session.input_audio_buffer.extend(audio)
+    item = await connection._commit_audio_buffer()
+
+    assert item is not None
+    assert base64.b64decode(item.content[0].audio) == audio
+
+    await connection._build_full_prompt(items=[item])
+
+    audio_content = renderer.conversations[0][0]["content"][0]["input_audio"]
+    assert audio_content["format"] == "wav"
+    with wave.open(io.BytesIO(base64.b64decode(audio_content["data"]))) as wav:
+        assert wav.getframerate() == SAMPLE_RATE_HZ
+        assert wav.getnchannels() == 1
+        assert wav.getsampwidth() == 2
+        assert wav.readframes(2) == audio
 
 
 @pytest.mark.asyncio
