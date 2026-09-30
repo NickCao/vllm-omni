@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -28,7 +28,7 @@ class _FakeTokenizer:
     @staticmethod
     def encode(text: str, *, add_special_tokens: bool) -> list[int]:
         del add_special_tokens
-        return [0] * (2 * len(text.split("|")))
+        return [0] * (2 * len(text.split("|")) if text else 0)
 
 
 class _FakeRenderer:
@@ -49,15 +49,30 @@ class _FakeRenderer:
         return [engine_input]
 
 
-@pytest.mark.asyncio
-async def test_preflight_truncates_by_rendered_token_count() -> None:
+class _FakeWebSocket:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def send_text(self, message: str) -> None:
+        self.messages.append(message)
+
+
+def _make_connection(
+    *, max_model_len: int = 100, websocket: Any = None
+) -> tuple[OpenAIFullDuplexConnection, _FakeRenderer]:
     renderer = _FakeRenderer()
     connection = OpenAIFullDuplexConnection(
-        websocket=cast(Any, None),
-        engine=SimpleNamespace(model_config=SimpleNamespace(max_model_len=100), renderer=renderer),
+        websocket=websocket,
+        engine=SimpleNamespace(model_config=SimpleNamespace(max_model_len=max_model_len), renderer=renderer),
         model_name="test-model",
         tokenizer=_FakeTokenizer(),
     )
+    return connection, renderer
+
+
+@pytest.mark.asyncio
+async def test_preflight_truncates_by_rendered_token_count() -> None:
+    connection, renderer = _make_connection()
 
     first = SimpleNamespace(
         id="first",
@@ -90,3 +105,18 @@ async def test_preflight_truncates_by_rendered_token_count() -> None:
     assert all(params.max_output_tokens == 32 for params in renderer.tokenization_params)
     assert items == [second]
     assert engine_input is renderer.engine_inputs[-1]
+
+
+@pytest.mark.asyncio
+async def test_rejected_response_create_does_not_cancel_active_response() -> None:
+    websocket = _FakeWebSocket()
+    connection, _ = _make_connection(max_model_len=5, websocket=websocket)
+    active_response = SimpleNamespace(response_id="active", request_id="active-request")
+    connection.session.active_response = active_response
+
+    await connection._handle_response_create(SimpleNamespace(event_id="evt_create", response=None))
+
+    assert connection.session.active_response is active_response
+    assert not connection._response_cancel_event.is_set()
+    assert len(websocket.messages) == 1
+    assert "exceeds the model's input token limit" in websocket.messages[0]
