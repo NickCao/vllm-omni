@@ -376,9 +376,8 @@ def _turn_based_realtime_app(handler: object | None, mocker) -> FastAPI:
     app.state.openai_serving_models = _FakeModels(
         base_model_paths=[BaseModelPath(name="omni-model", model_path="omni-model")]
     )
-    app.state.engine_client = mocker.Mock(
-        get_tokenizer=mocker.AsyncMock(return_value=mocker.Mock(chat_template="{{ messages }}"))
-    )
+    app.state.engine_client = mocker.Mock()
+    app.state.openai_serving_chat = mocker.Mock()
     return app
 
 
