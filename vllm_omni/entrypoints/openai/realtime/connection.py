@@ -574,9 +574,6 @@ class OpenAIFullDuplexConnection:
             await self._send_error(str(exc), "invalid_request_error", event_id=event.event_id)
             return
 
-        if s.active_response is not None:
-            await self._cancel_active_response()
-
         try:
             engine_input = await self._prepare_engine_input_with_auto_truncation(response)
         except VLLMValidationError as exc:
@@ -589,6 +586,9 @@ class OpenAIFullDuplexConnection:
                 event_id=event.event_id,
             )
             return
+
+        if s.active_response is not None:
+            await self._cancel_active_response()
 
         response_id = _gen_id("resp")
         await self._send_event(
