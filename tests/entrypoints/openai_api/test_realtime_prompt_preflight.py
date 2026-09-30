@@ -12,7 +12,9 @@ from typing import Any
 
 import numpy as np
 import pytest
+from vllm.sampling_params import RequestOutputKind, SamplingParams
 
+from tests.helpers.serving_chat import build_serving_chat
 from vllm_omni.entrypoints.openai.realtime.connection import (
     SAMPLE_RATE_HZ,
     OpenAIFullDuplexConnection,
@@ -58,7 +60,11 @@ class _FakeWebSocket:
 
 
 def _make_connection(
-    *, max_model_len: int = 100, websocket: Any = None, engine: Any = None
+    *,
+    max_model_len: int = 100,
+    websocket: Any = None,
+    engine: Any = None,
+    chat_handler: Any = None,
 ) -> tuple[OpenAIFullDuplexConnection, _FakeRenderer]:
     renderer = _FakeRenderer()
     model_config = SimpleNamespace(max_model_len=max_model_len, multimodal_config=None)
@@ -77,12 +83,15 @@ def _make_connection(
         websocket=websocket,
         engine=engine if engine is not None else SimpleNamespace(model_config=model_config),
         model_name="test-model",
-        chat_handler=SimpleNamespace(
+        chat_handler=chat_handler
+        if chat_handler is not None
+        else SimpleNamespace(
             renderer=renderer,
             chat_template=None,
             chat_template_content_format="auto",
             _effective_chat_template_kwargs=lambda _request: {},
             _preprocess_chat=preprocess_chat,
+            _fix_minicpmo45_audio_stream_output_kinds=lambda params, _modalities: params,
         ),
     )
     return connection, renderer
@@ -193,6 +202,53 @@ async def test_generated_audio_is_resampled_to_realtime_rate() -> None:
     assert active.item_id is not None
     assert len(pcm) == SAMPLE_RATE_HZ * 2
     assert connection.session.item_duration_ms[active.item_id] == pytest.approx(1000)
+
+
+@pytest.mark.asyncio
+async def test_minicpmo45_realtime_keeps_thinker_final_only() -> None:
+    model_arch = "MiniCPMO45OmniForConditionalGeneration"
+    stages = [
+        SimpleNamespace(engine_args=SimpleNamespace(model_arch=model_arch, model_stage="llm")),
+        SimpleNamespace(engine_args=SimpleNamespace(model_arch=model_arch, model_stage="tts")),
+    ]
+    submitted_params: list[list[SamplingParams]] = []
+
+    async def generate(**kwargs):
+        submitted_params.append(kwargs["sampling_params_list"])
+        yield SimpleNamespace(final_output_type="text", outputs=[])
+
+    model_config = SimpleNamespace(max_model_len=100, multimodal_config=None)
+    chat_handler = build_serving_chat()
+    engine = chat_handler.engine_client
+    engine.model_config = model_config
+    engine.stage_configs = stages
+    engine.default_sampling_params_list = [SamplingParams(), SamplingParams()]
+    engine.generate = generate
+    websocket = _FakeWebSocket()
+    connection, _ = _make_connection(
+        websocket=websocket,
+        engine=engine,
+        chat_handler=chat_handler,
+    )
+    response = _ResolvedResponse(
+        input=[],
+        instructions=None,
+        modalities=["audio"],
+        max_output_tokens="inf",
+        tools=None,
+        tool_choice="none",
+        metadata=None,
+    )
+    active = ActiveResponse(response_id="resp_test", request_id="req_test")
+    connection.session.active_response = active
+
+    await connection._run_response(active.response_id, response, {"prompt_token_ids": []})
+
+    assert len(submitted_params) == 1
+    assert [params.output_kind for params in submitted_params[0]] == [
+        RequestOutputKind.FINAL_ONLY,
+        RequestOutputKind.DELTA,
+    ]
 
 
 @pytest.mark.parametrize(
