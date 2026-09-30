@@ -44,7 +44,11 @@ async def _reject_unavailable_realtime_websocket(websocket: WebSocket) -> None:
 async def dispatch_realtime_websocket(websocket: WebSocket) -> None:
     """Route a turn-based Realtime session to the OpenAI connection handler."""
     state = websocket.app.state
-    if getattr(state, "diffusion_engine", None) is not None or getattr(state, "engine_client", None) is None:
+    if (
+        getattr(state, "diffusion_engine", None) is not None
+        or getattr(state, "engine_client", None) is None
+        or getattr(state, "openai_serving_chat", None) is None
+    ):
         await _reject_unavailable_realtime_websocket(websocket)
         return
 
@@ -68,14 +72,13 @@ async def dispatch_realtime_websocket(websocket: WebSocket) -> None:
                 DUPLEX_WARMUP_CLIENT_WAIT_S,
             )
 
-    tokenizer = await state.engine_client.get_tokenizer()
     from vllm_omni.entrypoints.openai.realtime.connection import OpenAIFullDuplexConnection
 
     connection = OpenAIFullDuplexConnection(
         websocket=websocket,
         engine=state.engine_client,
         model_name=model_name,
-        tokenizer=tokenizer,
+        chat_handler=state.openai_serving_chat,
         tool_call_parser=getattr(state.args, "tool_call_parser", None),
         enable_auto_tool_choice=getattr(state.args, "enable_auto_tool_choice", False),
     )
