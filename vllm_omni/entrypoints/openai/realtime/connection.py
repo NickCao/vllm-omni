@@ -39,13 +39,14 @@ from vllm_omni.entrypoints.openai.realtime.session import (
     _gen_id,
     merge_session_config,
 )
+from vllm_omni.utils.audio import audio_chunk_sample_rate
+from vllm_omni.utils.audio_resample import StreamingAudioResampler
 
 logger = init_logger(__name__)
 
 _CLIENT_EVENT_ADAPTER = TypeAdapter(types.RealtimeClientEvent)
 
-# Qwen3-Omni's Realtime contract is mono signed PCM16 at 24 kHz. PCM16 is the
-# sample width; 24 kHz is the sample rate.
+# The Realtime PCM contract is mono signed PCM16 at 24 kHz.
 SAMPLE_RATE_HZ = 24000
 BYTES_PER_SAMPLE_PCM16 = 2
 # Application safety caps for one append and the complete pending input turn.
@@ -777,6 +778,7 @@ class OpenAIFullDuplexConnection:
         limit_reached = False
         usage = ResponseUsage()
         total_audio_samples = 0
+        audio_resampler: StreamingAudioResampler | None = None
 
         previous_text = ""
         previous_token_ids: list[int] = []
@@ -815,6 +817,26 @@ class OpenAIFullDuplexConnection:
                         delta=piece,
                     )
                 )
+
+        async def emit_audio_delta(chunk: np.ndarray) -> None:
+            nonlocal total_audio_samples
+            if not chunk.size:
+                return
+            total_audio_samples += chunk.shape[0]
+            # Honor the response's explicit modality even if the engine emits audio.
+            if not is_audio or tool_call_seen:
+                return
+            await self._send_event(
+                types.ResponseAudioDeltaEvent(
+                    event_id=_gen_id("evt"),
+                    type="response.output_audio.delta",
+                    response_id=response_id,
+                    item_id=item_id,
+                    output_index=output_index,
+                    content_index=content_index,
+                    delta=self._pcm16_b64(chunk),
+                )
+            )
 
         async def handle_tool_parser_delta(delta_msg) -> None:
             nonlocal next_output_index, tool_call_seen
@@ -900,31 +922,14 @@ class OpenAIFullDuplexConnection:
                 output_type = getattr(output, "final_output_type", "text")
                 if output_type == "audio":
                     audio_chunks = self._extract_audio_deltas(output)
-                    for chunk in audio_chunks:
-                        total_audio_samples += chunk.shape[0]
-                        # is_audio guard is defense-in-depth: generate() is
-                        # now given output_modalities=modalities above, so
-                        # the engine shouldn't produce audio-typed output
-                        # for a text-only response -- but don't rely on
-                        # that alone to honor the client's explicit
-                        # request; never flip session state or forward
-                        # audio it didn't ask for.
-                        if not is_audio:
-                            continue
-                        if tool_call_seen:
-                            continue
-                        b64 = self._pcm16_b64(chunk)
-                        await self._send_event(
-                            types.ResponseAudioDeltaEvent(
-                                event_id=_gen_id("evt"),
-                                type="response.output_audio.delta",
-                                response_id=response_id,
-                                item_id=item_id,
-                                output_index=output_index,
-                                content_index=content_index,
-                                delta=b64,
+                    if audio_chunks:
+                        if audio_resampler is None:
+                            audio_resampler = StreamingAudioResampler(
+                                audio_chunk_sample_rate(output),
+                                SAMPLE_RATE_HZ,
                             )
-                        )
+                        for chunk in audio_chunks:
+                            await emit_audio_delta(audio_resampler.process(chunk))
                     continue
 
                 if output.outputs:
@@ -993,6 +998,10 @@ class OpenAIFullDuplexConnection:
 
         if self._response_cancel_event.is_set():
             cancelled = True
+
+        if audio_resampler is not None and not cancelled:
+            tail = audio_resampler.process(np.empty(0, dtype=np.float32), final=True)
+            await emit_audio_delta(tail)
 
         status = "cancelled" if cancelled else "incomplete" if limit_reached else "completed"
 

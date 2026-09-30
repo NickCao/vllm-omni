@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import wave
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 from vllm_omni.entrypoints.openai.realtime.connection import (
@@ -16,6 +18,7 @@ from vllm_omni.entrypoints.openai.realtime.connection import (
     OpenAIFullDuplexConnection,
     _ResolvedResponse,
 )
+from vllm_omni.entrypoints.openai.realtime.session import ActiveResponse
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -55,7 +58,7 @@ class _FakeWebSocket:
 
 
 def _make_connection(
-    *, max_model_len: int = 100, websocket: Any = None
+    *, max_model_len: int = 100, websocket: Any = None, engine: Any = None
 ) -> tuple[OpenAIFullDuplexConnection, _FakeRenderer]:
     renderer = _FakeRenderer()
     model_config = SimpleNamespace(max_model_len=max_model_len, multimodal_config=None)
@@ -72,7 +75,7 @@ def _make_connection(
 
     connection = OpenAIFullDuplexConnection(
         websocket=websocket,
-        engine=SimpleNamespace(model_config=model_config),
+        engine=engine if engine is not None else SimpleNamespace(model_config=model_config),
         model_name="test-model",
         chat_handler=SimpleNamespace(
             renderer=renderer,
@@ -141,6 +144,55 @@ async def test_audio_prompt_uses_standard_chat_audio_content() -> None:
         assert wav.getnchannels() == 1
         assert wav.getsampwidth() == 2
         assert wav.readframes(2) == audio
+
+
+@pytest.mark.asyncio
+async def test_generated_audio_is_resampled_to_realtime_rate() -> None:
+    source_rate = 32_000
+    waveform = np.sin(2 * np.pi * 440 * np.arange(source_rate) / source_rate).astype(np.float32)
+    outputs: list[Any] = []
+    for chunk in np.split(waveform, 2):
+        multimodal_output = {"audio": chunk, "sample_rate": source_rate}
+        outputs.append(
+            SimpleNamespace(
+                final_output_type="audio",
+                multimodal_output=multimodal_output,
+                outputs=[SimpleNamespace(multimodal_output=multimodal_output)],
+            )
+        )
+
+    async def generate(**_kwargs):
+        for output in outputs:
+            yield output
+
+    model_config = SimpleNamespace(max_model_len=100, multimodal_config=None)
+    engine = SimpleNamespace(
+        model_config=model_config,
+        default_sampling_params_list=[],
+        generate=generate,
+    )
+    websocket = _FakeWebSocket()
+    connection, _ = _make_connection(websocket=websocket, engine=engine)
+    response = _ResolvedResponse(
+        input=[],
+        instructions=None,
+        modalities=["audio"],
+        max_output_tokens="inf",
+        tools=None,
+        tool_choice="none",
+        metadata=None,
+    )
+    active = ActiveResponse(response_id="resp_test", request_id="req_test")
+    connection.session.active_response = active
+
+    await connection._run_response(active.response_id, response, {"prompt_token_ids": []})
+
+    events = [json.loads(message) for message in websocket.messages]
+    audio_deltas = [event for event in events if event["type"] == "response.output_audio.delta"]
+    pcm = b"".join(base64.b64decode(event["delta"]) for event in audio_deltas)
+    assert active.item_id is not None
+    assert len(pcm) == SAMPLE_RATE_HZ * 2
+    assert connection.session.item_duration_ms[active.item_id] == pytest.approx(1000)
 
 
 @pytest.mark.asyncio
