@@ -53,9 +53,6 @@ BYTES_PER_SAMPLE_PCM16 = 2
 MAX_AUDIO_APPEND_BYTES = 15 * 1024 * 1024
 MAX_INPUT_AUDIO_BUFFER_BYTES = 64 * 1024 * 1024
 
-# Empirically calibrated for Qwen3-Omni from 8,808 ms / 23 thinker tokens.
-QWEN3_OMNI_MS_PER_TOKEN = 383.0
-
 AUTO_TRUNCATION_TRIGGER_RATIO = 0.8
 AUTO_TRUNCATION_TARGET_RATIO = 0.5
 
@@ -784,7 +781,7 @@ class OpenAIFullDuplexConnection:
         previous_token_ids: list[int] = []
         pending_tool_calls: dict[int, dict[str, Any]] = {}
         next_output_index = 1  # 0 is the message item, reserved above
-        # Qwen's talker speaks tool markup, so stop audio after detecting a call.
+        # Tool-call markup is control output, so suppress its audio after detection.
         tool_call_seen = False
 
         async def emit_content_delta(piece: str) -> None:
@@ -822,10 +819,10 @@ class OpenAIFullDuplexConnection:
             nonlocal total_audio_samples
             if not chunk.size:
                 return
-            total_audio_samples += chunk.shape[0]
-            # Honor the response's explicit modality even if the engine emits audio.
+            # Honor the requested modality and suppress audio after a tool call.
             if not is_audio or tool_call_seen:
                 return
+            total_audio_samples += chunk.shape[0]
             await self._send_event(
                 types.ResponseAudioDeltaEvent(
                     event_id=_gen_id("evt"),
@@ -944,11 +941,8 @@ class OpenAIFullDuplexConnection:
                     delta_text = first_out.text or ""
                     delta_token_ids = list(first_out.token_ids)
                     usage.output_tokens += len(delta_token_ids)
-                    # Raw thinker token stream, in talker-consumption order --
-                    # this is what _qwen3_omni_truncate_transcript correlates
-                    # against codec frames, independent of any tool-parser
-                    # stripping applied to full_text/full_transcript below
-                    # (the talker speaks the raw stream, tool tags included).
+                    # Keep the raw token stream for approximate transcript
+                    # truncation, independent of any tool-parser stripping.
                     full_token_ids.extend(delta_token_ids)
 
                     if output.prompt_token_ids:
@@ -1152,11 +1146,9 @@ class OpenAIFullDuplexConnection:
                     s.item_duration_ms[item_obj.id] = total_audio_samples / SAMPLE_RATE_HZ * 1000
                     # Skip storing for tool-call responses: full_token_ids is
                     # the raw thinker stream (tool-call tags included), but
-                    # this item's transcript/text is the tool-parser-stripped
-                    # content -- the two no longer line up token-for-token,
-                    # so _qwen3_omni_truncate_transcript falls back to
-                    # blanking (today's behavior) rather than risk splicing
-                    # raw <tool_call> text into a truncated transcript.
+                    # this item's transcript/text is tool-parser-stripped,
+                    # so truncation falls back to a blank transcript rather
+                    # than splice raw tool markup into it.
                     if not pending_tool_calls:
                         s.item_token_ids[item_obj.id] = full_token_ids
                 await self._send_conversation_item_added_and_done(history_item, previous_item_id)
@@ -1470,16 +1462,10 @@ class OpenAIFullDuplexConnection:
             )
             return
 
-        # Per spec, truncating audio must not leave text in context the user
-        # never heard -- but rather than blanking the transcript entirely
-        # (the previous, spec-minimum behavior), reconstruct the prefix that
-        # *was* actually heard using Qwen3-Omni's fixed talker text/frame
-        # correlation (see _qwen3_omni_truncate_transcript). This keeps the
-        # model's own memory of what it said in sync with what the user
-        # actually heard, instead of wiping it and confusing later turns.
-        # Falls back to "" (today's behavior) when we don't have a captured
-        # token stream for this item (e.g. it included a tool call).
-        truncated_text = self._qwen3_omni_truncate_transcript(item_id, audio_end_ms)
+        # Preserve only the transcript prefix proportional to the audio heard.
+        # Exact token/audio alignment is model-specific, so fall back to an
+        # empty transcript when token IDs or duration are unavailable.
+        truncated_text = self._truncate_transcript(item_id, audio_end_ms)
         part = new_content[content_index]
         if hasattr(part, "transcript"):
             new_content[content_index] = {
@@ -1584,13 +1570,13 @@ class OpenAIFullDuplexConnection:
             resolved.append(referenced)
         return resolved
 
-    def _qwen3_omni_truncate_transcript(self, item_id: str, audio_end_ms: float) -> str:
-        """Approximate the transcript heard before ``audio_end_ms``."""
+    def _truncate_transcript(self, item_id: str, audio_end_ms: float) -> str:
+        """Estimate the transcript prefix heard before ``audio_end_ms``."""
         token_ids = self.session.item_token_ids.get(item_id)
-        if not token_ids:
+        duration_ms = self.session.item_duration_ms.get(item_id)
+        if not token_ids or duration_ms is None or duration_ms <= 0:
             return ""
-        tokens_heard = round(audio_end_ms / QWEN3_OMNI_MS_PER_TOKEN)
-        tokens_heard = min(tokens_heard, len(token_ids))
+        tokens_heard = int(len(token_ids) * audio_end_ms / duration_ms)
         if tokens_heard <= 0:
             return ""
         raw_tok = getattr(self._tokenizer, "tokenizer", self._tokenizer)
