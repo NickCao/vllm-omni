@@ -195,6 +195,29 @@ async def test_generated_audio_is_resampled_to_realtime_rate() -> None:
     assert connection.session.item_duration_ms[active.item_id] == pytest.approx(1000)
 
 
+@pytest.mark.parametrize(
+    ("audio_end_ms", "expected"),
+    [(0, ""), (250, "0"), (500, "01"), (999, "012"), (1000, "0123")],
+)
+def test_truncate_transcript_uses_item_audio_duration(audio_end_ms: float, expected: str) -> None:
+    connection, _ = _make_connection()
+    connection._tokenizer = SimpleNamespace(decode=lambda ids, **_kwargs: "".join(map(str, ids)))
+    connection.session.item_duration_ms["item"] = 1000
+    connection.session.item_token_ids["item"] = [0, 1, 2, 3]
+
+    assert connection._truncate_transcript("item", audio_end_ms) == expected
+
+
+def test_truncate_transcript_falls_back_without_tokens_or_duration() -> None:
+    connection, _ = _make_connection()
+    connection._tokenizer = SimpleNamespace(decode=lambda ids, **_kwargs: "".join(map(str, ids)))
+    connection.session.item_token_ids["missing_duration"] = [0, 1, 2, 3]
+    connection.session.item_duration_ms["missing_tokens"] = 1000
+
+    assert connection._truncate_transcript("missing_duration", 500) == ""
+    assert connection._truncate_transcript("missing_tokens", 500) == ""
+
+
 @pytest.mark.asyncio
 async def test_rejected_response_create_does_not_cancel_active_response() -> None:
     websocket = _FakeWebSocket()
