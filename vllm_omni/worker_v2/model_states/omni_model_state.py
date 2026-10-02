@@ -448,12 +448,18 @@ class OmniModelState(DefaultModelState):
         for_capture: bool = False,
         ubatch_idx: int = 0,
     ) -> dict[str, Any]:
-        if for_capture and input_batch.max_query_len is None:
+        if (
+            for_capture
+            and input_batch.max_query_len is None
+            and not self.vllm_config.compilation_config.cudagraph_mode.separate_routine()
+        ):
             # vLLM 0.30 distributes dummy tokens evenly across requests. For
             # an unconstrained FULL graph that split is not a query-length
             # bound: replay may put the entire token bucket in one request.
             # Attention launch parameters are fixed at capture, so use the
             # bucket's worst-case query length, not the dummy per-row length.
+            # Separate decode graphs must retain their uniform query bound:
+            # FA3's captured GQA layout must match the runtime AOT schedule.
             # Keep explicit bounds (e.g. varlen decode) and runtime metadata.
             input_batch = replace(input_batch, max_query_len=input_batch.num_tokens)
         return super().prepare_attn(
@@ -485,7 +491,7 @@ class OmniModelState(DefaultModelState):
         mm_embeds, is_mm_embed = self.gather_mm_embeddings(input_batch)
         kwargs: dict[str, Any] = {"multimodal_embeddings": mm_embeds, "is_multimodal": is_mm_embed}
         if mm_embeds:
-            kwargs["query_start_loc"] = input_batch.query_start_loc_np.tolist()
+            kwargs["query_start_loc"] = input_batch.query_start_loc_np[: input_batch.num_reqs + 1].tolist()
         embeds = self.model.embed_input_ids(input_batch.input_ids[: input_batch.num_tokens], **kwargs)
         inputs_embeds = self.encoder_runner.inputs_embeds
         inputs_embeds[: embeds.shape[0]] = embeds

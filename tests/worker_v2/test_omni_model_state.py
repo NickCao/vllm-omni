@@ -4,13 +4,17 @@
 graph/eager paths with per-request seed independence, async snapshot ownership."""
 
 from contextlib import nullcontext
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 import torch
+from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers
+from vllm.v1.worker.gpu.mm.encoder_runner import EncoderRunner
 from vllm.v1.worker.gpu.model_states.default import DefaultModelState
+from vllm.v1.worker.gpu.states import RequestState
 
 from vllm_omni.model_executor.models.output_templates import OmniOutput, OwnedBatchTensor
 from vllm_omni.worker_v2.model_states.omni_model_state import OmniModelState, _make_safe_get_rope
@@ -661,3 +665,32 @@ def test_identity_preprocess_skips_only_decode_rows(prefilling):
     state.run_preprocess(batch, {"input_ids": torch.tensor([1]), "inputs_embeds": embeds})
     assert seen == (["r1"] if prefilling else [])
     assert torch.equal(embeds, torch.ones(1, 4))
+
+
+def test_mm_embeddings_exclude_zero_length_graph_padding_rows():
+    state = object.__new__(OmniModelState)
+    state.supports_mm_inputs = True
+    state.mm_pruner = None
+    state.prompt_embeds_state = None
+    state.encoder_runner = MagicMock(spec=EncoderRunner, inputs_embeds=torch.zeros(8, 2))
+    state.execute_mm_encoder = lambda _: None
+    state.gather_mm_embeddings = lambda _: ([torch.ones(1, 2)], torch.ones(5, dtype=torch.bool))
+
+    def embed(input_ids, *, query_start_loc, multimodal_embeddings, is_multimodal):
+        assert query_start_loc == [0, 2, 5]
+        return input_ids[:, None].expand(-1, 2).float()
+
+    state.model = MagicMock(supports_embed_input_ids_query_start_loc=True, embed_input_ids=embed)
+    buffers = InputBuffers(4, 8, torch.device("cpu"))
+    batch = replace(
+        InputBatch.make_dummy(2, 5, buffers),
+        num_reqs=2,
+        num_reqs_after_padding=4,
+        num_tokens=5,
+        num_tokens_after_padding=8,
+        input_ids=torch.arange(8),
+        query_start_loc_np=np.array([0, 2, 5, 5, 5], dtype=np.int32),
+    )
+    result = state.prepare_inputs_embeds({}, batch, MagicMock(spec=RequestState))
+    torch.testing.assert_close(result[:5], torch.arange(5).float()[:, None].expand(-1, 2))
+    assert result.shape == (8, 2)
