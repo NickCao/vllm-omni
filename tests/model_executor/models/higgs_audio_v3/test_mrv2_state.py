@@ -35,6 +35,7 @@ def make_state():
         _audio_continuation_id=99,
         update_decode_step_metadata=Mock(),
     )
+    state._stream_pos = {}
     state._eager_state = EagerMTPState(state)
     return state
 
