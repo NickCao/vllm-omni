@@ -80,7 +80,7 @@ from vllm.entrypoints.speech_to_text.transcription.serving import (
 from vllm.entrypoints.speech_to_text.translation.serving import (
     OpenAIServingTranslation,
 )
-from vllm.logger import init_logger
+from vllm.logger import configure_logging_from_args, init_logger
 from vllm.renderers.online_renderer import OnlineRenderer
 from vllm.tasks import POOLING_TASKS
 from vllm.tool_parsers import ToolParserManager
@@ -3109,6 +3109,7 @@ if __name__ == "__main__":
     # when __main__ is called, i.e., --omni is only used when called through the entrypoints.
     parser.add_argument("--omni", action="store_true", default=False)
     args = parser.parse_args()
+    configure_logging_from_args(args)
     # sync args.model to model_tag, because if we pass the model positionally,
     # args.model will be the default from vLLM's ModelConfig (currently
     # Qwen/Qwen3-0.6B) and crash cryptically.
