@@ -126,8 +126,8 @@ async def test_preflight_truncates_by_rendered_token_count() -> None:
 
     engine_input = await connection._prepare_engine_input_with_auto_truncation(response)
 
-    assert renderer.raw_prompt_lengths == [4, 2]
-    assert [len(prompt["prompt_token_ids"]) for prompt in renderer.engine_inputs] == [90, 50]
+    assert renderer.raw_prompt_lengths == [4, 2, 2]
+    assert [len(prompt["prompt_token_ids"]) for prompt in renderer.engine_inputs] == [90, 50, 50]
     assert all(params.max_total_tokens is None for params in renderer.tokenization_params)
     assert all(params.max_output_tokens == 0 for params in renderer.tokenization_params)
     assert items == [second]
