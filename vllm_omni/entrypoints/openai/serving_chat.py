@@ -979,6 +979,7 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
         documents: list[dict[str, str]] | None = None,
         add_special_tokens: bool = False,
         tok_params: TokenizeParams | None = None,
+        skip_mm_cache: bool = False,
     ) -> tuple[list[ConversationMessage], list[TokPrompt]]:
         if renderer is None:
             renderer = self.renderer
@@ -1023,6 +1024,7 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
             prompt_extras={
                 k: v for k in ("mm_processor_kwargs", "cache_salt") if (v := getattr(request, k, None)) is not None
             },
+            skip_mm_cache=skip_mm_cache,
         )
 
         tokenizer = renderer.get_tokenizer()

@@ -470,14 +470,22 @@ class OpenAIFullDuplexConnection:
             trigger = limit
             target = limit
 
+        # Budget checks are speculative and may render repeatedly while
+        # truncating, so keep them off the shared sender cache. Once accepted,
+        # render again through the normal cache path for engine submission.
         engine_input = await self._build_full_prompt(
             tools=response.tools,
             instructions=response.instructions,
             items=items,
+            skip_mm_cache=True,
         )
         total = len(engine_input["prompt_token_ids"])
         if total <= trigger:
-            return engine_input
+            return await self._build_full_prompt(
+                tools=response.tools,
+                instructions=response.instructions,
+                items=items,
+            )
         if mode == "disabled":
             logger.warning(
                 "[realtime] token budget exceeded (%d/%d) and truncation is disabled -- rejecting response.create",
@@ -527,10 +535,17 @@ class OpenAIFullDuplexConnection:
                 tools=response.tools,
                 instructions=response.instructions,
                 items=items,
+                skip_mm_cache=True,
             )
             total = len(engine_input["prompt_token_ids"])
 
-        return engine_input if total <= limit else None
+        if total > limit:
+            return None
+        return await self._build_full_prompt(
+            tools=response.tools,
+            instructions=response.instructions,
+            items=items,
+        )
 
     async def _handle_response_create(self, event: types.ResponseCreateEvent):
         s = self.session
@@ -1591,6 +1606,7 @@ class OpenAIFullDuplexConnection:
         *,
         instructions: str | None = None,
         items: list | None = None,
+        skip_mm_cache: bool = False,
     ) -> EngineInput:
         """Render the effective conversation through normal chat preprocessing."""
         chat_handler = self.chat_handler
@@ -1666,6 +1682,7 @@ class OpenAIFullDuplexConnection:
             default_template_kwargs=chat_handler._effective_chat_template_kwargs(request),
             tool_dicts=converted_tools,
             tok_params=tok_params,
+            skip_mm_cache=skip_mm_cache,
         )
         if engine_input.get("prompt_token_ids") is None:
             raise RuntimeError("Realtime renderer did not return prompt token IDs")
