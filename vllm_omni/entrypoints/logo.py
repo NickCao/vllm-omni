@@ -1,6 +1,11 @@
-import os
-import re
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
+"""Startup logo helpers shared by the Omni server entrypoints."""
+
+import os
+
+import regex as re
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -37,7 +42,6 @@ LOGO = f"""{VLLM_L1}{GAP_L1}{O_L1}{MNI_L1}
 {VLLM_L4}{GAP_L4}{O_L4}{MNI_L4}
 """
 
-
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
@@ -50,3 +54,11 @@ def log_logo() -> None:
     use_color = "NO_COLOR" not in os.environ and os.environ.get("VLLM_LOGGING_COLOR") != "0"
     logo = LOGO if use_color else _ANSI_RE.sub("", LOGO)
     logger.info(logo)
+
+
+def log_omni_logo() -> None:
+    """Log the Omni logo and suppress vLLM's version/model logo."""
+    if bool(int(os.environ.get("VLLM_DISABLE_LOG_LOGO", "0"))):
+        return
+    os.environ["VLLM_DISABLE_LOG_LOGO"] = "1"
+    log_logo()

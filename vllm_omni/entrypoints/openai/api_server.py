@@ -105,6 +105,7 @@ from vllm_omni.entrypoints.duplex.warmup import (
     startup_warmup_kind,
 )
 from vllm_omni.entrypoints.duplex_omni import DuplexOmni
+from vllm_omni.entrypoints.logo import log_omni_logo
 from vllm_omni.entrypoints.openai import app_state as openai_app_state
 from vllm_omni.entrypoints.openai.app_state import (
     ENDPOINT_LOAD_METRICS_FORMAT_HEADER_LABEL,
@@ -3110,6 +3111,7 @@ if __name__ == "__main__":
     parser.add_argument("--omni", action="store_true", default=False)
     args = parser.parse_args()
     configure_logging_from_args(args)
+    log_omni_logo()
     # sync args.model to model_tag, because if we pass the model positionally,
     # args.model will be the default from vLLM's ModelConfig (currently
     # Qwen/Qwen3-0.6B) and crash cryptically.

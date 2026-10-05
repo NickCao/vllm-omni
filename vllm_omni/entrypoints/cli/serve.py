@@ -26,7 +26,7 @@ from vllm.entrypoints.serve.utils.api_utils import VLLM_SUBCMD_PARSER_EPILOG
 from vllm.logger import init_logger
 
 from vllm_omni.diffusion.registry import resolve_native_single_file
-from vllm_omni.entrypoints.cli.logo import log_logo
+from vllm_omni.entrypoints.logo import log_omni_logo
 from vllm_omni.entrypoints.openai.api_server import (
     omni_run_server,
     run_omni_api_server_worker_proc,
@@ -134,9 +134,7 @@ class OmniServeCommand(CLISubcommand):
 
     @staticmethod
     def cmd(args: TrackingNamespace) -> None:
-        if not os.environ.get("VLLM_DISABLE_LOG_LOGO"):
-            os.environ["VLLM_DISABLE_LOG_LOGO"] = "1"
-            log_logo()
+        log_omni_logo()
 
         # If model is specified in CLI (as positional arg), it takes precedence
         if hasattr(args, "model_tag") and args.model_tag is not None:

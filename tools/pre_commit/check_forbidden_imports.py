@@ -126,7 +126,6 @@ CHECK_IMPORTS = {
             "vllm_omni/diffusion/models/soulx_singer/preprocess/g2p.py",
             "vllm_omni/diffusion/profiler/diffusion_pipeline_profiler.py",
             "vllm_omni/distributed/omni_connectors/utils/env.py",
-            "vllm_omni/entrypoints/cli/logo.py",
             "vllm_omni/entrypoints/openai/serving_speech.py",
             "vllm_omni/experimental/fullduplex/joyvl/memory/memory.py",
             "vllm_omni/model_executor/models/common/whisper_vq.py",
