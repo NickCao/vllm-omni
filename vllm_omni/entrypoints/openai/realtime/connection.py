@@ -434,7 +434,12 @@ class OpenAIFullDuplexConnection:
             metadata=metadata,
         )
 
-    async def _prepare_engine_input_with_auto_truncation(self, response: _ResolvedResponse) -> EngineInput | None:
+    async def _prepare_engine_input_with_auto_truncation(
+        self,
+        response: _ResolvedResponse,
+        *,
+        preflight_only: bool = False,
+    ) -> EngineInput | None:
         s = self.session
         max_model_len = getattr(self.engine.model_config, "max_model_len", None)
         persistent = response.input is None
@@ -445,6 +450,7 @@ class OpenAIFullDuplexConnection:
                 tools=response.tools,
                 instructions=response.instructions,
                 items=items,
+                skip_mm_cache=preflight_only,
             )
 
         truncation = s.config.truncation or "auto"
@@ -482,6 +488,8 @@ class OpenAIFullDuplexConnection:
         )
         total = len(engine_input["prompt_token_ids"])
         if total <= trigger:
+            if preflight_only:
+                return engine_input
             return await self._build_full_prompt(
                 tools=response.tools,
                 instructions=response.instructions,
@@ -539,6 +547,8 @@ class OpenAIFullDuplexConnection:
 
         if total > limit:
             return None
+        if preflight_only:
+            return engine_input
         engine_input = await self._build_full_prompt(
             tools=response.tools,
             instructions=response.instructions,
@@ -573,8 +583,12 @@ class OpenAIFullDuplexConnection:
             await self._send_error(str(exc), "invalid_request_error", event_id=event.event_id)
             return
 
+        had_active_response = s.active_response is not None
         try:
-            engine_input = await self._prepare_engine_input_with_auto_truncation(response)
+            engine_input = await self._prepare_engine_input_with_auto_truncation(
+                response,
+                preflight_only=had_active_response,
+            )
         except VLLMValidationError as exc:
             await self._send_error(str(exc), "invalid_request_error", event_id=event.event_id)
             return
@@ -586,8 +600,21 @@ class OpenAIFullDuplexConnection:
             )
             return
 
-        if s.active_response is not None:
-            await self._cancel_active_response()
+        if had_active_response:
+            if s.active_response is not None:
+                await self._cancel_active_response()
+            try:
+                engine_input = await self._prepare_engine_input_with_auto_truncation(response)
+            except VLLMValidationError as exc:
+                await self._send_error(str(exc), "invalid_request_error", event_id=event.event_id)
+                return
+            if engine_input is None:
+                await self._send_error(
+                    "The response input exceeds the model's input token limit",
+                    "invalid_request_error",
+                    event_id=event.event_id,
+                )
+                return
 
         response_id = _gen_id("resp")
         await self._send_event(
