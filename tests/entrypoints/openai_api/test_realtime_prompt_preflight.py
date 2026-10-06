@@ -70,9 +70,7 @@ def _make_connection(
     model_config = SimpleNamespace(max_model_len=max_model_len, multimodal_config=None)
 
     async def preprocess_chat(request: Any, messages: list[dict[str, Any]], **kwargs: Any):
-        tok_params = kwargs.get("tok_params")
-        if tok_params is None:
-            tok_params = request.build_tok_params(model_config)
+        tok_params = request.build_tok_params(model_config)
         return await renderer.render_chat_async(
             [messages],
             kwargs.get("default_template_kwargs"),
@@ -124,13 +122,19 @@ async def test_preflight_truncates_by_rendered_token_count() -> None:
         metadata=None,
     )
 
-    engine_input = await connection._prepare_engine_input_with_auto_truncation(response)
+    prompt_items = await connection._truncate_prompt_items(response)
+    engine_input = await connection._build_full_prompt(
+        tools=response.tools,
+        instructions=response.instructions,
+        items=prompt_items,
+    )
 
     assert renderer.raw_prompt_lengths == [4, 2, 2]
     assert [len(prompt["prompt_token_ids"]) for prompt in renderer.engine_inputs] == [90, 50, 50]
-    assert all(params.max_total_tokens is None for params in renderer.tokenization_params)
+    assert all(params.max_total_tokens == 100 for params in renderer.tokenization_params)
     assert all(params.max_output_tokens == 0 for params in renderer.tokenization_params)
     assert items == [first, second]
+    assert prompt_items == [second]
     assert engine_input is renderer.engine_inputs[-1]
 
 
