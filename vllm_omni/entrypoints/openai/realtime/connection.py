@@ -444,7 +444,6 @@ class OpenAIFullDuplexConnection:
         max_model_len = getattr(self.engine.model_config, "max_model_len", None)
         persistent = response.input is None
         items: list[Any] = s.items if response.input is None else response.input
-        staged_deletions: list[Any] = []
         if max_model_len is None:
             return await self._build_full_prompt(
                 tools=response.tools,
@@ -503,10 +502,9 @@ class OpenAIFullDuplexConnection:
             )
             return None
 
-        if persistent:
-            # Preflight truncation is speculative. Work on a snapshot so a
-            # rejected response.create does not delete items from session history.
-            items = list(items)
+        # Automatic truncation affects only the model context. Conversation
+        # history remains retrievable, so work on a local prompt-window copy.
+        items = list(items)
 
         idx = 0
         while total > target and idx < len(items):
@@ -533,9 +531,6 @@ class OpenAIFullDuplexConnection:
                     remove_indexes.append(pair_idx)
 
             for remove_idx in sorted(remove_indexes, reverse=True):
-                removed = items[remove_idx]
-                if persistent:
-                    staged_deletions.append(removed)
                 del items[remove_idx]
             engine_input = await self._build_full_prompt(
                 tools=response.tools,
@@ -554,16 +549,6 @@ class OpenAIFullDuplexConnection:
             instructions=response.instructions,
             items=items,
         )
-        for removed in staged_deletions:
-            if removed.id is None or s.remove_item(removed.id) is None:
-                continue
-            await self._send_event(
-                types.ConversationItemDeletedEvent(
-                    event_id=_gen_id("evt"),
-                    type="conversation.item.deleted",
-                    item_id=removed.id,
-                )
-            )
         return engine_input
 
     async def _handle_response_create(self, event: types.ResponseCreateEvent):
