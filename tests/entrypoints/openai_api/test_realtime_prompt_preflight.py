@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from openai.types import realtime as types
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 from tests.helpers.serving_chat import build_serving_chat
@@ -20,7 +21,10 @@ from vllm_omni.entrypoints.openai.realtime.connection import (
     OpenAIFullDuplexConnection,
     _ResolvedResponse,
 )
-from vllm_omni.entrypoints.openai.realtime.session import ActiveResponse
+from vllm_omni.entrypoints.openai.realtime.session import (
+    ActiveResponse,
+    AudioFullDuplexSessionState,
+)
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -95,22 +99,24 @@ def _make_connection(
     return connection, renderer
 
 
+def _message_item(
+    item_id: str,
+    text: str | None = None,
+) -> types.RealtimeConversationItemUserMessage:
+    return types.RealtimeConversationItemUserMessage(
+        id=item_id,
+        type="message",
+        role="user",
+        content=[{"type": "input_text", "text": text or item_id}],
+    )
+
+
 @pytest.mark.asyncio
 async def test_preflight_truncates_by_rendered_token_count() -> None:
     connection, renderer = _make_connection()
 
-    first = SimpleNamespace(
-        id="first",
-        type="message",
-        role="user",
-        content=[SimpleNamespace(type="input_text", text="first")],
-    )
-    second = SimpleNamespace(
-        id="second",
-        type="message",
-        role="user",
-        content=[SimpleNamespace(type="input_text", text="second")],
-    )
+    first = _message_item("first")
+    second = _message_item("second")
     items = [first, second]
     response = _ResolvedResponse(
         input=items,
@@ -136,6 +142,154 @@ async def test_preflight_truncates_by_rendered_token_count() -> None:
     assert items == [first, second]
     assert prompt_items == [second]
     assert engine_input is renderer.engine_inputs[-1]
+
+
+@pytest.mark.asyncio
+async def test_persistent_model_context_cursor_reuses_truncated_window() -> None:
+    connection, renderer = _make_connection()
+    first = _message_item("first")
+    second = _message_item("second")
+    connection.session.insert_item(first)
+    connection.session.insert_item(second)
+    response = _ResolvedResponse(
+        input=None,
+        instructions=None,
+        modalities=["text"],
+        max_output_tokens="inf",
+        tools=None,
+        tool_choice="none",
+        metadata=None,
+    )
+
+    prompt_items = await connection._truncate_prompt_items(response)
+    await connection._build_full_prompt(
+        tools=response.tools,
+        instructions=response.instructions,
+        items=prompt_items,
+    )
+    connection.session.commit_model_context_items(prompt_items)
+    renderer.raw_prompt_lengths.clear()
+
+    prompt_items = await connection._truncate_prompt_items(response)
+
+    assert renderer.raw_prompt_lengths == [2]
+    assert prompt_items == [second]
+    assert connection.session.model_context_first_item_id == "second"
+    assert not connection.session.model_context_cursor_at_end
+
+
+@pytest.mark.asyncio
+async def test_empty_model_context_allows_a_later_appended_item() -> None:
+    connection, renderer = _make_connection(max_model_len=20)
+    response = _ResolvedResponse(
+        input=None,
+        instructions=None,
+        modalities=["text"],
+        max_output_tokens="inf",
+        tools=None,
+        tool_choice="none",
+        metadata=None,
+    )
+
+    prompt_items = await connection._truncate_prompt_items(response)
+    connection.session.commit_model_context_items(prompt_items)
+    connection.session.insert_item(_message_item("appended"))
+
+    assert renderer.raw_prompt_lengths == [0]
+    assert prompt_items == []
+    assert [item.id for item in connection.session.model_context_items()] == ["appended"]
+    assert connection.session.model_context_first_item_id == "appended"
+    assert not connection.session.model_context_cursor_at_end
+
+
+@pytest.mark.asyncio
+async def test_truncation_to_empty_selects_no_items_when_overhead_fits() -> None:
+    connection, renderer = _make_connection(max_model_len=20)
+    connection.session.insert_item(_message_item("item"))
+    response = _ResolvedResponse(
+        input=None,
+        instructions=None,
+        modalities=["text"],
+        max_output_tokens="inf",
+        tools=None,
+        tool_choice="none",
+        metadata=None,
+    )
+
+    prompt_items = await connection._truncate_prompt_items(response)
+    connection.session.commit_model_context_items(prompt_items)
+    connection.session.insert_item(_message_item("appended"))
+
+    assert renderer.raw_prompt_lengths == [2, 0]
+    assert prompt_items == []
+    assert [item.id for item in connection.session.model_context_items()] == ["appended"]
+
+
+def test_model_context_cursor_moves_only_forward() -> None:
+    session = AudioFullDuplexSessionState()
+
+    session.insert_item(_message_item("first"))
+    session.insert_item(_message_item("second"))
+    session.insert_item(_message_item("third"))
+    assert session.model_context_first_item_id == "first"
+    assert session.model_context_items() == session.items
+
+    session.commit_model_context_items(session.items[1:])
+    session.insert_item(_message_item("before-second"), previous_item_id="first")
+    assert session.model_context_first_item_id == "second"
+    assert [item.id for item in session.model_context_items()] == ["second", "third"]
+
+    session.insert_item(_message_item("after-second"), previous_item_id="second")
+    assert session.model_context_first_item_id == "second"
+    assert [item.id for item in session.model_context_items()] == [
+        "second",
+        "after-second",
+        "third",
+    ]
+
+    session.remove_item("second")
+    assert session.model_context_first_item_id == "after-second"
+    assert [item.id for item in session.model_context_items()] == ["after-second", "third"]
+
+    session.commit_model_context_items([])
+    session.insert_item(_message_item("fourth"))
+    session.insert_item(_message_item("root"), previous_item_id="root")
+    assert session.model_context_first_item_id == "fourth"
+    assert not session.model_context_cursor_at_end
+    assert [item.id for item in session.model_context_items()] == ["fourth"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_truncation_bisects_the_model_context_cursor() -> None:
+    connection, renderer = _make_connection()
+    items = [
+        SimpleNamespace(
+            id=f"item_{index}",
+            type="message",
+            role="user",
+            content=[SimpleNamespace(type="input_text", text=str(index))],
+        )
+        for index in range(8)
+    ]
+    response = _ResolvedResponse(
+        input=items,
+        instructions=None,
+        modalities=["text"],
+        max_output_tokens="inf",
+        tools=None,
+        tool_choice="none",
+        metadata=None,
+    )
+
+    prompt_items = await connection._truncate_prompt_items(response)
+    await connection._build_full_prompt(
+        tools=response.tools,
+        instructions=response.instructions,
+        items=prompt_items,
+    )
+
+    assert renderer.raw_prompt_lengths == [16, 8, 4, 2, 2]
+    assert prompt_items == [items[-1]]
 
 
 @pytest.mark.asyncio

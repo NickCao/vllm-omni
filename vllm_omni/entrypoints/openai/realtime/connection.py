@@ -442,7 +442,7 @@ class OpenAIFullDuplexConnection:
         s = self.session
         max_model_len = self.engine.model_config.max_model_len
         persistent = response.input is None
-        items: list[Any] = s.items if response.input is None else response.input
+        items: list[Any] = s.model_context_items() if persistent else response.input
 
         async def probe_prompt(current_items: list[Any]) -> tuple[EngineInput | None, int]:
             # Budget checks are speculative and may render repeatedly while
@@ -495,36 +495,25 @@ class OpenAIFullDuplexConnection:
             )
             return None
 
-        # Automatic truncation affects only the model context. Conversation
-        # history remains retrievable, so work on a local prompt-window copy.
-        items = list(items)
+        all_items = items
+        if not all_items:
+            return None if total > limit else all_items
 
-        idx = 0
-        while total > target and idx < len(items):
-            item = items[idx]
-            if getattr(item, "role", None) == "system":
-                idx += 1
-                continue
-            if persistent and item.id is not None and s.item_in_progress.get(item.id, False):
-                idx += 1
-                continue
+        low = 1
+        high = len(all_items)
+        feasible_index: int | None = None
+        while low < high:
+            middle = (low + high) // 2
+            items = all_items[middle:]
+            engine_input, total = await probe_prompt(items)
+            if total <= target:
+                high = middle
+                feasible_index = middle
+            else:
+                low = middle + 1
 
-            remove_indexes = [idx]
-            if item.type in ("function_call", "function_call_output"):
-                call_id = getattr(item, "call_id", None)
-                pair_idx = next(
-                    (
-                        other_idx
-                        for other_idx, other in enumerate(items)
-                        if other_idx != idx and getattr(other, "call_id", None) == call_id
-                    ),
-                    None,
-                )
-                if pair_idx is not None:
-                    remove_indexes.append(pair_idx)
-
-            for remove_idx in sorted(remove_indexes, reverse=True):
-                del items[remove_idx]
+        if feasible_index != low:
+            items = all_items[low:]
             engine_input, total = await probe_prompt(items)
 
         if total > limit:
@@ -587,6 +576,8 @@ class OpenAIFullDuplexConnection:
         except VLLMValidationError as exc:
             await self._send_error(str(exc), "invalid_request_error", event_id=event.event_id)
             return
+        if response.input is None:
+            s.commit_model_context_items(preflight_items)
 
         response_id = _gen_id("resp")
         await self._send_event(
