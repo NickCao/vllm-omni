@@ -87,7 +87,7 @@ class AudioFullDuplexSessionState:
     config: types.RealtimeSessionCreateRequest = field(default_factory=_default_config)
 
     conversation_id: str = field(default_factory=lambda: _gen_id("conv"))
-    items: list[Any] = field(default_factory=list)
+    items: list[types.ConversationItem] = field(default_factory=list)
     # Valid model-context cursor states are:
     # - (None, False): include from the first retained item.
     # - (first item ID, False): include from that item onward.
@@ -111,17 +111,17 @@ class AudioFullDuplexSessionState:
                 return i
         return None
 
-    def find_item(self, item_id: str) -> Any | None:
+    def find_item(self, item_id: str) -> types.ConversationItem | None:
         idx = self.find_item_index(item_id)
         return self.items[idx] if idx is not None else None
 
     @staticmethod
-    def _jsonable_item(item: Any) -> Any:
+    def _jsonable_item(item: types.ConversationItem) -> Any:
         if hasattr(item, "model_dump"):
             return item.model_dump(mode="json", exclude_none=True)
         return item
 
-    def _history_size(self, items: list[Any] | None = None) -> int:
+    def _history_size(self, items: list[types.ConversationItem] | None = None) -> int:
         history = self.items if items is None else items
         serialized = json.dumps(
             [self._jsonable_item(item) for item in history],
@@ -130,7 +130,7 @@ class AudioFullDuplexSessionState:
         )
         return len(serialized.encode("utf-8"))
 
-    def _ensure_history_capacity(self, items: list[Any]) -> None:
+    def _ensure_history_capacity(self, items: list[types.ConversationItem]) -> None:
         if self._history_size(items) > MAX_HISTORY_BYTES:
             raise HistoryLimitError(f"Conversation history exceeds the {MAX_HISTORY_BYTES} byte limit")
 
@@ -142,10 +142,10 @@ class AudioFullDuplexSessionState:
         index = self.find_item_index(self.model_context_first_item_id)
         return len(self.items) if index is None else index
 
-    def model_context_items(self) -> list[Any]:
+    def model_context_items(self) -> list[types.ConversationItem]:
         return self.items[self._model_context_start_index() :]
 
-    def commit_model_context_items(self, items: list[Any]) -> None:
+    def commit_model_context_items(self, items: list[types.ConversationItem]) -> None:
         self.model_context_first_item_id = items[0].id if items else None
         self.model_context_cursor_at_end = not items
 
@@ -207,7 +207,7 @@ class AudioFullDuplexSessionState:
         self.item_in_progress.pop(item_id, None)
         self.pending_truncations_ms.pop(item_id, None)
 
-    def remove_item(self, item_id: str) -> Any | None:
+    def remove_item(self, item_id: str) -> types.ConversationItem | None:
         idx = self.find_item_index(item_id)
         if idx is None:
             return None

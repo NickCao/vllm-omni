@@ -67,7 +67,7 @@ class _UnsupportedAudioFormatError(ValueError):
 
 @dataclass(slots=True)
 class _ResolvedResponse:
-    input: list[Any] | None
+    input: list[types.ConversationItem] | None
     instructions: str | None
     modalities: list[str]
     max_output_tokens: int | str
@@ -438,13 +438,17 @@ class OpenAIFullDuplexConnection:
             metadata=metadata,
         )
 
-    async def _truncate_prompt_items(self, response: _ResolvedResponse) -> list[Any] | None:
+    async def _truncate_prompt_items(self, response: _ResolvedResponse) -> list[types.ConversationItem] | None:
         s = self.session
         max_model_len = self.engine.model_config.max_model_len
-        persistent = response.input is None
-        items: list[Any] = s.model_context_items() if persistent else response.input
+        if response.input is None:
+            items = s.model_context_items()
+        else:
+            items = response.input
 
-        async def probe_prompt(current_items: list[Any]) -> tuple[EngineInput | None, int]:
+        async def probe_prompt(
+            current_items: list[types.ConversationItem],
+        ) -> tuple[EngineInput | None, int]:
             # Budget checks are speculative and may render repeatedly while
             # truncating, so keep them off the shared sender cache.
             try:
@@ -1572,8 +1576,8 @@ class OpenAIFullDuplexConnection:
                 return text
         return ""
 
-    def _resolve_response_input(self, items: list[Any]) -> list[Any]:
-        resolved = []
+    def _resolve_response_input(self, items: list[Any]) -> list[types.ConversationItem]:
+        resolved: list[types.ConversationItem] = []
         for item in items:
             if getattr(item, "type", None) != "item_reference":
                 self._validate_input_item(item)
@@ -1604,7 +1608,7 @@ class OpenAIFullDuplexConnection:
         tools: list | None = None,
         *,
         instructions: str | None = None,
-        items: list | None = None,
+        items: list[types.ConversationItem] | None = None,
         skip_mm_cache: bool = False,
     ) -> EngineInput:
         """Render the effective conversation through normal chat preprocessing."""
