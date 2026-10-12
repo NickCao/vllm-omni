@@ -220,14 +220,23 @@ class OpenAIFullDuplexConnection:
             await self._send_error(str(exc), "unsupported_audio_format", event_id=event.event_id)
             return
         try:
-            turn_detector = self._build_turn_detector(candidate_config)
+            turn_detection_config = self._build_turn_detection_config(candidate_config)
         except ValueError as exc:
             await self._send_error(str(exc), "unsupported_turn_detection", event_id=event.event_id)
             return
 
-        s.config = candidate_config
-        if turn_detector is None:
+        turn_detector = self._turn_detector
+        if turn_detection_config is None:
+            # Keep buffered audio available for manual commit or clear, but
+            # discard speech state owned by the detector being disabled.
             self._reset_turn_detection()
+            turn_detector = None
+        elif turn_detector is None:
+            turn_detector = turn_detection_config.build_detector(self._vad_backend_provider)
+        elif turn_detector.config != turn_detection_config:
+            turn_detector.reconfigure(turn_detection_config)
+
+        s.config = candidate_config
         self._turn_detector = turn_detector
         await self._send_session_updated()
 
@@ -275,7 +284,7 @@ class OpenAIFullDuplexConnection:
 
         return sanitized
 
-    def _build_turn_detector(self, config: types.RealtimeSessionCreateRequest) -> ServerTurnDetector | None:
+    def _build_turn_detection_config(self, config: types.RealtimeSessionCreateRequest) -> TurnDetectionConfig | None:
         audio_input = config.audio.input if config.audio is not None else None
         turn_detection = audio_input.turn_detection if audio_input is not None else None
         if turn_detection is None:
@@ -296,7 +305,7 @@ class OpenAIFullDuplexConnection:
                 True if turn_detection.interrupt_response is None else turn_detection.interrupt_response
             ),
         )
-        return detector_config.build_detector(self._vad_backend_provider)
+        return detector_config
 
     def _reset_turn_detection(self) -> None:
         if self._turn_detector is not None:
@@ -400,9 +409,8 @@ class OpenAIFullDuplexConnection:
                     await self._cancel_active_response()
             return
 
-        if result.speech_started:
-            if self._speech_item_id is None:
-                self._speech_item_id = _gen_id("item")
+        if result.speech_started and self._speech_item_id is None:
+            self._speech_item_id = _gen_id("item")
             await self._send_event(
                 types.InputAudioBufferSpeechStartedEvent(
                     event_id=_gen_id("evt"),
