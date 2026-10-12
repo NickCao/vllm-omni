@@ -400,13 +400,9 @@ class OpenAIFullDuplexConnection:
         detector = self._turn_detector
         assert detector is not None, "turn detection results require an active detector"
 
-        if result.speech_started and result.speech_stopped and result.speech_active:
-            # Coalesce a stop and restart detected within one append. From the
-            # client's perspective, keep the current speech item open and let
-            # a later standalone stop finish and commit it.
-            if self._speech_item_id is None:
-                if detector.config.interrupt_response:
-                    await self._cancel_active_response()
+        coalesced_stop_restart = result.speech_started and result.speech_stopped and result.speech_active
+        if coalesced_stop_restart and self._speech_item_id is not None:
+            # Keep the existing item open; a later standalone stop will close it.
             return
 
         if result.speech_started and self._speech_item_id is None:
@@ -421,6 +417,11 @@ class OpenAIFullDuplexConnection:
             )
             if detector.config.interrupt_response:
                 await self._cancel_active_response()
+
+        if coalesced_stop_restart:
+            # The normal start path above opened an item. Keep it open because
+            # speech is active again; a later standalone stop will close it.
+            return
 
         if not result.speech_stopped:
             return
