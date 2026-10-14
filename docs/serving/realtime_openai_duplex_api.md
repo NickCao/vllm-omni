@@ -49,6 +49,8 @@ is base64-encoded raw PCM16.
 | Server to client | `response.created` | Starts a response |
 | Server to client | `response.output_text.delta` / `.done` | Carries text output |
 | Server to client | `response.output_audio_transcript.delta` / `.done` | Carries the transcript of audio output |
+| Server to client | `conversation.item.input_audio_transcription.completed` | Carries the transcript and usage for a committed input audio item |
+| Server to client | `conversation.item.input_audio_transcription.failed` | Reports a failed input audio transcription |
 | Server to client | `response.output_audio.delta` | Carries incremental PCM16 response audio |
 | Server to client | `response.output_audio.done` | Marks the end of response audio |
 | Server to client | `response.done` | Completes the response and reports its status and usage |
@@ -157,11 +159,13 @@ Remote MCP tools are not supported. An MCP entry in `tools` or an MCP
 
 ### Input processing and turn detection
 
-`audio.input.transcription` and `audio.input.noise_reduction` are accepted on
-`session.update` for client compatibility but are not implemented: the server
-clears them and does not transcribe input audio or reduce its noise. Non-null
-values on `response.create` are rejected. Preprocess audio in the client when
-these features are required.
+`audio.input.transcription` is implemented for committed input audio items when
+the loaded model supports transcription; see
+[Input Audio Transcription](#input-audio-transcription). `audio.input.noise_reduction`
+is accepted on `session.update` for client compatibility but is not implemented:
+the server clears it and does not reduce input noise. Non-null values on
+`response.create` are rejected for both options. Preprocess audio in the client
+when noise reduction is required.
 
 `audio.input.turn_detection` supports `server_vad` and `semantic_vad`;
 `semantic_vad` requires `interrupt_response: true`. Set `turn_detection` to
@@ -186,6 +190,23 @@ the conversation history. Images do not start a response; send `response.create`
 after adding the item. The `input_image.image_url` value is passed through the
 model's chat multimodal renderer, which validates and materializes supported
 image URLs. Image understanding requires a model with image input support.
+
+## Input Audio Transcription
+
+Configure `audio.input.transcription` in `session.update` to request a
+transcript for each committed input audio item. The loaded comprehension model
+must implement vLLM's transcription interface. Qwen3-Omni uses its thinker for
+both Realtime inference and transcription; it does not start a separate ASR
+service.
+
+The server honors `language` and `prompt`, normalizes `model` to the served
+model name, and removes unsupported `delay`, `keywords`, and `languages`
+options from `session.updated`. A successful transcription emits
+`conversation.item.input_audio_transcription.completed` with `transcript` and
+`usage`, and attaches the transcript to the corresponding conversation item.
+Failures emit `conversation.item.input_audio_transcription.failed`. If the
+loaded model does not support transcription, the option is removed and no
+transcription events are emitted.
 
 ## Availability and Limitations
 
