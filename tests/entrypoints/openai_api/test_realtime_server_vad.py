@@ -9,6 +9,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from fastapi import WebSocketDisconnect
 from openai.types import realtime as types
 from openai.types.realtime.realtime_audio_input_turn_detection import ServerVad
 
@@ -40,6 +41,20 @@ class _FakeWebSocket:
 
     async def send_text(self, message: str) -> None:
         self.messages.append(message)
+
+
+class _InboundFakeWebSocket(_FakeWebSocket):
+    def __init__(self, incoming_messages: list[str]) -> None:
+        super().__init__()
+        self.incoming_messages = incoming_messages
+
+    async def accept(self) -> None:
+        pass
+
+    async def receive_text(self) -> str:
+        if not self.incoming_messages:
+            raise WebSocketDisconnect()
+        return self.incoming_messages.pop(0)
 
 
 class _FakeTurnDetector(ServerTurnDetector):
@@ -160,6 +175,41 @@ async def test_server_vad_session_update_creates_turn_detector() -> None:
     assert events[-1]["type"] == "session.updated"
     assert isinstance(connection.session.config.audio.input.turn_detection, ServerVad)
     assert connection._turn_detector is not None
+
+
+@pytest.mark.asyncio
+async def test_server_vad_extra_field_is_ignored_before_consecutive_session_updates() -> None:
+    first_update = {
+        "type": "session.update",
+        "session": {
+            "type": "realtime",
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcm", "rate": SAMPLE_RATE_HZ},
+                    "turn_detection": {"type": "server_vad", "min_speech_duration_ms": 250},
+                }
+            },
+        },
+    }
+    second_update = {
+        "type": "session.update",
+        "session": {"type": "realtime", "instructions": "Answer briefly."},
+    }
+    websocket = _InboundFakeWebSocket([json.dumps(first_update), json.dumps(second_update)])
+    connection = _make_connection(websocket)
+
+    await connection.handle_connection()
+
+    events = [json.loads(message) for message in websocket.messages]
+    assert [event["type"] for event in events] == ["session.created", "session.updated", "session.updated"]
+    assert connection.session.config.instructions == "Answer briefly."
+
+    audio = connection.session.config.audio
+    assert audio is not None and audio.input is not None
+    turn_detection = audio.input.turn_detection
+    assert isinstance(turn_detection, ServerVad)
+    assert not turn_detection.model_extra
+    assert "min_speech_duration_ms" not in turn_detection.model_fields_set
 
 
 @pytest.mark.asyncio

@@ -144,7 +144,7 @@ class OpenAIFullDuplexConnection:
                 except WebSocketDisconnect:
                     break
                 try:
-                    event = _CLIENT_EVENT_ADAPTER.validate_json(text)
+                    event = _CLIENT_EVENT_ADAPTER.validate_json(text, extra="ignore")
                 except Exception:
                     await self._send_error(
                         "Invalid or unrecognized client event",
@@ -265,12 +265,6 @@ class OpenAIFullDuplexConnection:
             # These options are accepted for compatibility but are not implemented.
             audio_input.transcription = None
             audio_input.noise_reduction = None
-            turn_detection = audio_input.turn_detection
-            if isinstance(turn_detection, ServerVad):
-                # The OpenAI SDK model allows extra keys; omit them from effective config.
-                extra_fields = turn_detection.model_fields_set - ServerVad.model_fields.keys()
-                for field_name in extra_fields:
-                    delattr(turn_detection, field_name)
             if not self._is_pcm16_24khz_format(audio_input.format):
                 raise _UnsupportedAudioFormatError("Only 24 kHz PCM16 input audio is supported")
 
