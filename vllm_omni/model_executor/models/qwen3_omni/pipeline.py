@@ -43,6 +43,7 @@ QWEN3_OMNI_PIPELINE = PipelineConfig(
             requires_multimodal_data=True,
             hf_config_name="thinker_config",
             engine_output_type="latent",
+            transcription_model_arch="Qwen3OmniMoeThinkerForConditionalGeneration",
             custom_process_next_stage_input_func=(f"{_PROC}.thinker2talker_full_payload"),
             async_chunk_process_next_stage_input_func=(f"{_PROC}.thinker2talker_async_chunk"),
             # Takes effect only when the deploy selects model_runner v2 for this stage.
@@ -98,6 +99,7 @@ QWEN3_OMNI_THINKER_ONLY_PIPELINE = PipelineConfig(
             requires_multimodal_data=True,
             hf_config_name="thinker_config",
             engine_output_type="text",
+            transcription_model_arch="Qwen3OmniMoeThinkerForConditionalGeneration",
             sampling_constraints={"detokenize": True},
         ),
     ),

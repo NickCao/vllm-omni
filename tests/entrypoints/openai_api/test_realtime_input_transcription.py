@@ -8,6 +8,7 @@ import io
 import json
 import wave
 from types import SimpleNamespace
+from typing import Any
 
 import pybase64 as base64
 import pytest
@@ -22,6 +23,10 @@ from vllm_omni.entrypoints.duplex.openai import OpenAIRealtimeHandler
 from vllm_omni.entrypoints.openai.realtime.connection import (
     SAMPLE_RATE_HZ,
     OpenAIFullDuplexConnection,
+)
+from vllm_omni.model_executor.models.qwen3_omni.pipeline import (
+    QWEN3_OMNI_PIPELINE,
+    QWEN3_OMNI_THINKER_ONLY_PIPELINE,
 )
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
@@ -82,53 +87,140 @@ def _sent_events(websocket: _FakeWebSocket) -> list[dict]:
 
 
 class _HandlerState:
-    def __init__(self) -> None:
-        self.engine_client = SimpleNamespace(model_config=object())
+    def __init__(self, engine_client: object | None = None) -> None:
+        self.engine_client = engine_client or SimpleNamespace(model_config=object())
         self.openai_serving_models = object()
 
 
+class _FakeRealtimeServing:
+    def __init__(self, engine_client: Any, models: object, *, model_cls: object) -> None:
+        self.engine_client = engine_client
+        self.models = models
+        self.model_cls = model_cls
+
+
+def _make_handler(state: _HandlerState) -> OpenAIRealtimeHandler:
+    handler = OpenAIRealtimeHandler.from_engine_client(state.engine_client)
+    handler._openai_serving_models = state.openai_serving_models
+    return handler
+
+
 def test_realtime_handler_builds_and_caches_transcription_serving(monkeypatch) -> None:
-    handler = OpenAIRealtimeHandler()
     state = _HandlerState()
-    constructed: list[dict[str, object]] = []
+    handler = _make_handler(state)
+    outer_model_cls = object()
 
-    class _FakeServing:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            constructed.append({"args": args, "kwargs": kwargs})
-
-    monkeypatch.setattr(realtime_openai, "get_model_cls", lambda _model_config: object())
+    monkeypatch.setattr(realtime_openai, "get_model_cls", lambda _model_config: outer_model_cls)
     monkeypatch.setattr(realtime_openai, "supports_transcription", lambda _model_cls: True)
-    monkeypatch.setattr(realtime_openai, "OpenAIServingTranscription", _FakeServing)
+    monkeypatch.setattr(realtime_openai, "_RealtimeTranscriptionServing", _FakeRealtimeServing)
 
-    serving = handler._resolve_transcription_serving(state)
+    serving = handler._transcription_serving
 
-    assert isinstance(serving, _FakeServing)
-    assert len(constructed) == 1
-    assert constructed[0]["args"] == (state.engine_client, state.openai_serving_models)
-    assert constructed[0]["kwargs"] == {"request_logger": None}
-    assert handler._resolve_transcription_serving(state) is serving
-    assert len(constructed) == 1
+    assert isinstance(serving, _FakeRealtimeServing)
+    assert serving.engine_client is state.engine_client
+    assert serving.models is state.openai_serving_models
+    assert serving.model_cls is outer_model_cls
+    assert handler._transcription_serving is serving
+
+
+@pytest.mark.asyncio
+async def test_realtime_handler_uses_comprehension_stage_transcription_model(monkeypatch) -> None:
+    class _FakeEngine:
+        def __init__(self) -> None:
+            self.model_config = object()
+            self.stage_configs = (SimpleNamespace(is_comprehension=True, transcription_model_arch="StageTranscriber"),)
+            self.stage_vllm_configs = (SimpleNamespace(model_config=object()),)
+            self.generate_calls: list[dict[str, Any]] = []
+
+        async def generate(self, *args: object, **kwargs: object):
+            self.generate_calls.append({"args": args, "kwargs": kwargs})
+            yield object()
+
+    engine = _FakeEngine()
+    state = _HandlerState(engine)
+    handler = _make_handler(state)
+    outer_model_cls = object()
+    stage_model_cls = object()
+
+    monkeypatch.setattr(realtime_openai, "get_model_cls", lambda _model_config: outer_model_cls)
+    monkeypatch.setattr(
+        realtime_openai,
+        "supports_transcription",
+        lambda model_cls: model_cls is stage_model_cls,
+    )
+    monkeypatch.setattr(
+        realtime_openai,
+        "_resolve_comprehension_transcription_model_cls",
+        lambda *_args: stage_model_cls,
+    )
+    monkeypatch.setattr(realtime_openai, "_RealtimeTranscriptionServing", _FakeRealtimeServing)
+
+    serving = handler._transcription_serving
+
+    assert isinstance(serving, _FakeRealtimeServing)
+    assert serving.model_cls is stage_model_cls
+    async for _ in serving.engine_client.generate("prompt", request_id="request"):
+        pass
+    assert engine.generate_calls[0]["kwargs"]["output_modalities"] == ["text"]
 
 
 def test_realtime_handler_skips_transcription_for_unsupported_model(monkeypatch) -> None:
-    handler = OpenAIRealtimeHandler()
     state = _HandlerState()
+    handler = _make_handler(state)
     monkeypatch.setattr(realtime_openai, "get_model_cls", lambda _model_config: object())
     monkeypatch.setattr(realtime_openai, "supports_transcription", lambda _model_cls: False)
+    monkeypatch.setattr(realtime_openai, "_resolve_comprehension_transcription_model_cls", lambda *_args: None)
 
-    assert handler._resolve_transcription_serving(state) is None
+    assert handler._transcription_serving is None
 
 
 def test_realtime_handler_fails_closed_on_model_lookup_error(monkeypatch) -> None:
-    handler = OpenAIRealtimeHandler()
     state = _HandlerState()
+    handler = _make_handler(state)
 
     def _get_model_cls(_model_config: object) -> object:
         raise RuntimeError("model lookup failed")
 
     monkeypatch.setattr(realtime_openai, "get_model_cls", _get_model_cls)
 
-    assert handler._resolve_transcription_serving(state) is None
+    assert handler._transcription_serving is None
+
+
+@pytest.mark.parametrize(
+    "pipeline",
+    (QWEN3_OMNI_PIPELINE, QWEN3_OMNI_THINKER_ONLY_PIPELINE),
+)
+def test_qwen_pipelines_declare_thinker_transcription_arch(pipeline) -> None:
+    stage = pipeline.stages[0]
+
+    assert stage.owns_tokenizer
+    assert stage.transcription_model_arch == "Qwen3OmniMoeThinkerForConditionalGeneration"
+
+
+def test_comprehension_stage_resolver_uses_declared_model_arch() -> None:
+    outer_model_config = object()
+    stage_model_cls = object()
+
+    class _FakeRegistry:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[str], object]] = []
+
+        def resolve_model_cls(self, architectures: list[str], model_config: object):
+            self.calls.append((architectures, model_config))
+            return stage_model_cls, architectures[0]
+
+    registry = _FakeRegistry()
+    stage_model_config = SimpleNamespace(registry=registry)
+    engine = SimpleNamespace(
+        model_config=outer_model_config,
+        stage_configs=(SimpleNamespace(is_comprehension=True, transcription_model_arch="StageTranscriber"),),
+        stage_vllm_configs=(SimpleNamespace(model_config=stage_model_config),),
+    )
+
+    result = realtime_openai._resolve_comprehension_transcription_model_cls(engine, outer_model_config)
+
+    assert result is stage_model_cls
+    assert registry.calls == [(["StageTranscriber"], stage_model_config)]
 
 
 @pytest.mark.asyncio

@@ -1723,6 +1723,10 @@ class BaseVllmOmniStageConfig:
         return self.stage_pipeline_config.owns_tokenizer
 
     @property
+    def transcription_model_arch(self) -> str | None:
+        return self.stage_pipeline_config.transcription_model_arch
+
+    @property
     def engine_output_type(self) -> str | None:
         return self.stage_pipeline_config.engine_output_type
 

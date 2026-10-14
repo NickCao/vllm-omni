@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
-from functools import cache
+from functools import cached_property
 from typing import Any
 
 from fastapi import WebSocket
 from vllm.entrypoints.speech_to_text.transcription.serving import OpenAIServingTranscription
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import get_model_cls
-from vllm.model_executor.models import supports_transcription
+from vllm.model_executor.models import ModelRegistry, supports_transcription
 from vllm.utils import random_uuid
 
 from vllm_omni.engine.duplex.turn_detection import SileroVADBackendProvider
@@ -53,29 +53,49 @@ class OpenAIRealtimeHandler:
         self,
         *,
         model_path: str | None = None,
+        engine_client: Any = None,
     ) -> None:
         self._vad_backend_provider = SileroVADBackendProvider(model_path=model_path)
+        self._engine_client: Any = engine_client
+        self._openai_serving_models: Any = None
 
     @classmethod
     def from_engine_client(cls, engine_client: Any) -> OpenAIRealtimeHandler:
         backend_engine = getattr(engine_client, "engine", engine_client)
         duplex_session_config = getattr(backend_engine, "duplex_session_config", None)
-        return cls(model_path=getattr(duplex_session_config, "server_vad_model_path", None))
+        return cls(
+            model_path=getattr(duplex_session_config, "server_vad_model_path", None),
+            engine_client=engine_client,
+        )
 
-    @cache
-    def _resolve_transcription_serving(self, state: Any) -> OpenAIServingTranscription | None:
+    @cached_property
+    def _transcription_serving(self) -> OpenAIServingTranscription | None:
         """Reuse the standard transcription serving stack for Realtime input transcription."""
-        engine_client = state.engine_client
+        engine_client = self._engine_client
         model_config = getattr(engine_client, "model_config", None)
-        if model_config is None:
+        if engine_client is None or model_config is None or self._openai_serving_models is None:
             return None
         try:
-            if not supports_transcription(get_model_cls(model_config)):
+            model_cls = get_model_cls(model_config)
+        except Exception:
+            logger.debug("Realtime input transcription is unavailable for the loaded model", exc_info=True)
+            return None
+
+        if not supports_transcription(model_cls):
+            model_cls = _resolve_comprehension_transcription_model_cls(engine_client, model_config)
+            if model_cls is None or not supports_transcription(model_cls):
                 return None
-            return OpenAIServingTranscription(
-                engine_client,
-                state.openai_serving_models,
-                request_logger=None,
+
+        try:
+            transcription_engine_client = (
+                _TextOutputEngineClient(engine_client)
+                if getattr(engine_client, "stage_configs", None)
+                else engine_client
+            )
+            return _RealtimeTranscriptionServing(
+                transcription_engine_client,
+                self._openai_serving_models,
+                model_cls=model_cls,
             )
         except Exception:
             logger.debug("Realtime input transcription is unavailable for the loaded model", exc_info=True)
@@ -91,6 +111,7 @@ class OpenAIRealtimeHandler:
             await _reject_unavailable_realtime_websocket(websocket)
             return
 
+        self._openai_serving_models = state.openai_serving_models
         model_name = state.openai_serving_models.base_model_paths[0].name
         # Some OpenAI-compatible clients always send ``model=`` even when the
         # caller leaves model selection to this single-model Omni server.
@@ -111,6 +132,55 @@ class OpenAIRealtimeHandler:
             tool_call_parser=getattr(state.args, "tool_call_parser", None),
             enable_auto_tool_choice=getattr(state.args, "enable_auto_tool_choice", False),
             vad_backend_provider=self._vad_backend_provider,
-            transcription_serving=self._resolve_transcription_serving(state),
+            transcription_serving=self._transcription_serving,
         )
         await connection.handle_connection()
+
+
+class _TextOutputEngineClient:
+    """Force staged transcription requests to stop at a text-output stage."""
+
+    def __init__(self, engine_client: Any) -> None:
+        self._engine_client = engine_client
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._engine_client, name)
+
+    def generate(self, *args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("output_modalities", ["text"])
+        return self._engine_client.generate(*args, **kwargs)
+
+
+class _RealtimeTranscriptionServing(OpenAIServingTranscription):
+    """Use a stage-declared transcription implementation with standard serving."""
+
+    def __init__(self, engine_client: Any, models: Any, *, model_cls: type[Any]) -> None:
+        self._transcription_model_cls = model_cls
+        super().__init__(engine_client, models, request_logger=None)
+
+    @property
+    def model_cls(self) -> type[Any]:
+        return self._transcription_model_cls
+
+
+def _resolve_declared_model_cls(model_config: Any, model_arch: str) -> type[Any]:
+    registry = getattr(model_config, "registry", ModelRegistry)
+    return registry.resolve_model_cls([model_arch], model_config)[0]
+
+
+def _resolve_comprehension_transcription_model_cls(
+    engine_client: Any,
+    model_config: Any,
+) -> type[Any] | None:
+    backend_engine = getattr(engine_client, "engine", engine_client)
+    stage_configs = getattr(backend_engine, "stage_configs", ())
+    stage_vllm_configs = getattr(backend_engine, "stage_vllm_configs", ())
+    for stage_config, stage_vllm_config in zip(stage_configs, stage_vllm_configs):
+        if stage_vllm_config is None or not getattr(stage_config, "is_comprehension", False):
+            continue
+        model_arch = getattr(stage_config, "transcription_model_arch", None)
+        if model_arch is None:
+            return None
+        stage_model_config = getattr(stage_vllm_config, "model_config", model_config)
+        return _resolve_declared_model_cls(stage_model_config, model_arch)
+    return None
