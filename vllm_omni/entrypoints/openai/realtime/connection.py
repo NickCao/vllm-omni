@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pybase64 as base64
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import UploadFile, WebSocket, WebSocketDisconnect
 from openai.types import realtime as types
 from openai.types.chat import (
     ChatCompletionContentPartImageParam,
@@ -32,6 +32,10 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionNamedToolChoiceParam,
     ChatCompletionRequest,
     ChatCompletionToolsParam,
+)
+from vllm.entrypoints.speech_to_text.transcription.protocol import (
+    TranscriptionRequest,
+    TranscriptionResponse,
 )
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
@@ -109,6 +113,7 @@ class OpenAIFullDuplexConnection:
         tool_call_parser: str | None = None,
         enable_auto_tool_choice: bool = False,
         vad_backend_provider: SileroVADBackendProvider | None = None,
+        transcription_serving: Any | None = None,
     ):
         self.ws = websocket
         self.engine = engine
@@ -117,6 +122,7 @@ class OpenAIFullDuplexConnection:
         self._tokenizer = chat_handler.renderer.get_tokenizer()
         self._tool_call_parser_name = tool_call_parser if enable_auto_tool_choice else None
         self._vad_backend_provider = vad_backend_provider
+        self._transcription_serving = transcription_serving
         self._turn_detector: ServerTurnDetector | None = None
         self._speech_item_id: str | None = None
 
@@ -125,6 +131,7 @@ class OpenAIFullDuplexConnection:
 
         self._connected = True
         self._response_task: asyncio.Task | None = None
+        self._transcription_tasks: set[asyncio.Task[None]] = set()
         self._response_cancel_event = asyncio.Event()
         self._send_lock = asyncio.Lock()
 
@@ -161,6 +168,11 @@ class OpenAIFullDuplexConnection:
     async def _cleanup(self):
         self._connected = False
         await self._cancel_active_response()
+        transcription_tasks = tuple(self._transcription_tasks)
+        for task in transcription_tasks:
+            task.cancel()
+        if transcription_tasks:
+            await asyncio.gather(*transcription_tasks, return_exceptions=True)
         logger.info("[realtime] connection closed, session_id=%s", self.session.session_id)
 
     # ------------------------------------------------------------------ #
@@ -262,8 +274,10 @@ class OpenAIFullDuplexConnection:
 
         audio_input = audio.input
         if audio_input is not None:
-            # These options are accepted for compatibility but are not implemented.
-            audio_input.transcription = None
+            # Transcription and noise reduction are accepted for compatibility
+            # but are not implemented on models without transcription support.
+            if self._transcription_serving is None:
+                audio_input.transcription = None
             audio_input.noise_reduction = None
             if not self._is_pcm16_24khz_format(audio_input.format):
                 raise _UnsupportedAudioFormatError("Only 24 kHz PCM16 input audio is supported")
@@ -466,13 +480,97 @@ class OpenAIFullDuplexConnection:
 
     @staticmethod
     def _pcm16_wav_b64(audio: bytes) -> str:
+        return base64.b64encode(OpenAIFullDuplexConnection._pcm16_wav(audio)).decode("ascii")
+
+    @staticmethod
+    def _pcm16_wav(audio: bytes) -> bytes:
         with io.BytesIO() as buffer:
             with wave.open(buffer, "wb") as wav:
                 wav.setnchannels(1)
                 wav.setsampwidth(BYTES_PER_SAMPLE_PCM16)
                 wav.setframerate(SAMPLE_RATE_HZ)
                 wav.writeframes(audio)
-            return base64.b64encode(buffer.getvalue()).decode("ascii")
+            return buffer.getvalue()
+
+    async def _emit_input_audio_transcription(
+        self,
+        transcription_serving: Any,
+        item_id: str,
+        audio: bytes,
+        *,
+        language: str | None,
+        prompt: str | None,
+    ) -> None:
+        try:
+            wav_audio = self._pcm16_wav(audio)
+            # Exclude ``file`` from the request's set fields so request-body
+            # logging never has to serialize an UploadFile; ``audio_data``
+            # carries the payload.
+            request = TranscriptionRequest.model_construct(
+                _fields_set={"model", "language", "prompt", "response_format"},
+                file=UploadFile(file=io.BytesIO(wav_audio), filename="realtime-input.wav"),
+                model=self.model_name,
+                language=language,
+                prompt=prompt or "",
+                response_format="json",
+            )
+            result = await transcription_serving.create_transcription(
+                wav_audio,
+                request,
+                raw_request=None,
+            )
+            if not isinstance(result, TranscriptionResponse):
+                message = getattr(getattr(result, "error", None), "message", None)
+                raise RuntimeError(message or "Transcription serving returned an error")
+        except Exception:
+            logger.exception("[realtime] input audio transcription failed for item %s", item_id)
+            await self._send_json(
+                {
+                    "event_id": _gen_id("evt"),
+                    "type": "conversation.item.input_audio_transcription.failed",
+                    "item_id": item_id,
+                    "content_index": 0,
+                    "error": {
+                        "type": "transcription_error",
+                        "code": "transcription_failed",
+                        "message": "Failed to transcribe input audio",
+                        "param": None,
+                    },
+                }
+            )
+            return
+
+        await self._send_json(
+            {
+                "event_id": _gen_id("evt"),
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": item_id,
+                "content_index": 0,
+                "transcript": result.text,
+            }
+        )
+
+    def _schedule_input_audio_transcription(
+        self,
+        transcription_serving: Any,
+        item_id: str,
+        audio: bytes,
+        *,
+        language: str | None,
+        prompt: str | None,
+    ) -> None:
+        task = asyncio.create_task(
+            self._emit_input_audio_transcription(
+                transcription_serving,
+                item_id,
+                audio,
+                language=language,
+                prompt=prompt,
+            ),
+            name=f"realtime-transcription-{item_id}",
+        )
+        self._transcription_tasks.add(task)
+        task.add_done_callback(self._transcription_tasks.discard)
 
     async def _commit_audio_buffer(
         self,
@@ -484,7 +582,8 @@ class OpenAIFullDuplexConnection:
             s = self.session
             if len(s.input_audio_buffer) == 0:
                 return None
-            audio = base64.b64encode(s.input_audio_buffer).decode("ascii")
+            committed_audio = bytes(s.input_audio_buffer)
+            audio = base64.b64encode(committed_audio).decode("ascii")
             item = types.RealtimeConversationItemUserMessage(
                 type="message",
                 role="user",
@@ -512,6 +611,18 @@ class OpenAIFullDuplexConnection:
             # Do not echo the client's potentially large audio payload.
             wire_item = item.model_copy(update={"content": []})
             await self._send_conversation_item_added_and_done(wire_item, previous_item_id)
+            audio_config = s.config.audio
+            audio_input = audio_config.input if audio_config is not None else None
+            transcription = audio_input.transcription if audio_input is not None else None
+            transcription_serving = self._transcription_serving
+            if transcription_serving is not None and transcription is not None:
+                self._schedule_input_audio_transcription(
+                    transcription_serving,
+                    item.id,
+                    committed_audio,
+                    language=transcription.language,
+                    prompt=transcription.prompt,
+                )
             return item
         finally:
             self._reset_turn_detection()

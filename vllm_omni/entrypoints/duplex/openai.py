@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+from functools import cache
 from typing import Any
 
 from fastapi import WebSocket
+from vllm.entrypoints.speech_to_text.transcription.serving import OpenAIServingTranscription
 from vllm.logger import init_logger
+from vllm.model_executor.model_loader import get_model_cls
+from vllm.model_executor.models import supports_transcription
 from vllm.utils import random_uuid
 
 from vllm_omni.engine.duplex.turn_detection import SileroVADBackendProvider
@@ -45,7 +49,11 @@ async def _reject_unavailable_realtime_websocket(websocket: WebSocket) -> None:
 class OpenAIRealtimeHandler:
     """App-scoped OpenAI Realtime handler with one shared VAD backend provider."""
 
-    def __init__(self, *, model_path: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model_path: str | None = None,
+    ) -> None:
         self._vad_backend_provider = SileroVADBackendProvider(model_path=model_path)
 
     @classmethod
@@ -53,6 +61,25 @@ class OpenAIRealtimeHandler:
         backend_engine = getattr(engine_client, "engine", engine_client)
         duplex_session_config = getattr(backend_engine, "duplex_session_config", None)
         return cls(model_path=getattr(duplex_session_config, "server_vad_model_path", None))
+
+    @cache
+    def _resolve_transcription_serving(self, state: Any) -> OpenAIServingTranscription | None:
+        """Reuse the standard transcription serving stack for Realtime input transcription."""
+        engine_client = state.engine_client
+        model_config = getattr(engine_client, "model_config", None)
+        if model_config is None:
+            return None
+        try:
+            if not supports_transcription(get_model_cls(model_config)):
+                return None
+            return OpenAIServingTranscription(
+                engine_client,
+                state.openai_serving_models,
+                request_logger=None,
+            )
+        except Exception:
+            logger.debug("Realtime input transcription is unavailable for the loaded model", exc_info=True)
+            return None
 
     async def handle_websocket(self, websocket: WebSocket) -> None:
         state = websocket.app.state
@@ -84,5 +111,6 @@ class OpenAIRealtimeHandler:
             tool_call_parser=getattr(state.args, "tool_call_parser", None),
             enable_auto_tool_choice=getattr(state.args, "enable_auto_tool_choice", False),
             vad_backend_provider=self._vad_backend_provider,
+            transcription_serving=self._resolve_transcription_serving(state),
         )
         await connection.handle_connection()
