@@ -445,6 +445,67 @@ async def test_server_vad_coalesced_stop_restart_without_item_stays_open_until_l
 
 
 @pytest.mark.asyncio
+async def test_server_vad_coalesced_stop_restart_with_open_item_stays_open_until_later_stop() -> None:
+    websocket = _FakeWebSocket()
+    connection = _make_connection(websocket)
+    detector = _FakeTurnDetector(
+        [
+            _speech_started_result(),
+            TurnDetectionResult(
+                is_speech=True,
+                speech_active=True,
+                speech_started=True,
+                speech_stopped=True,
+                speech_probability=0.9,
+                audio_start_ms=300,
+                audio_end_ms=200,
+            ),
+            TurnDetectionResult(
+                is_speech=False,
+                speech_active=False,
+                speech_stopped=True,
+                speech_probability=0.1,
+                audio_end_ms=500,
+                should_commit=True,
+                create_response=False,
+            ),
+        ]
+    )
+    connection._turn_detector = detector
+
+    await connection._handle_audio_append(_audio_event(b"\x00\x00"))
+    started = json.loads(websocket.messages[0])
+    assert started["type"] == "input_audio_buffer.speech_started"
+    item_id = started["item_id"]
+    assert connection._speech_item_id == item_id
+
+    await connection._handle_audio_append(_audio_event(b"\x00\x20"))
+
+    events = [json.loads(message) for message in websocket.messages]
+    assert [event["type"] for event in events] == ["input_audio_buffer.speech_started"]
+    assert connection._speech_item_id == item_id
+    assert connection.session.input_audio_buffer == bytearray(b"\x00\x00\x00\x20")
+
+    await connection._handle_audio_append(_audio_event(b"\x00\x40"))
+
+    events = [json.loads(message) for message in websocket.messages]
+    assert [event["type"] for event in events] == [
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "conversation.item.added",
+        "conversation.item.done",
+    ]
+    stopped, committed = events[1:3]
+    assert stopped["item_id"] == committed["item_id"] == item_id
+    assert stopped["audio_end_ms"] == 500
+    assert connection.session.items[0].id == item_id
+    assert connection.session.input_audio_buffer == bytearray()
+    assert connection._speech_item_id is None
+    assert detector.reset_count == 1
+
+
+@pytest.mark.asyncio
 async def test_server_vad_commit_without_response_creation() -> None:
     websocket = _FakeWebSocket()
     connection = _make_connection(websocket)
