@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 import torch
 from PIL import Image
+from vllm.multimodal.image import open_image
 
 from vllm_omni.errors import OmniClientError
 
@@ -67,7 +68,7 @@ def load_minimax_h3_images(value: Any) -> list[Image.Image]:
     if isinstance(value, (str, os.PathLike)):
         if os.path.getsize(value) > MINIMAX_H3_MAX_REFERENCE_IMAGE_BYTES:
             raise OmniClientError("MiniMax H3 reference image exceeds the 30 MiB size limit")
-        with Image.open(value) as image:
+        with open_image(value) as image:
             image_format = str(image.format or "").lower()
             if image_format and image_format not in MINIMAX_H3_REFERENCE_IMAGE_FORMATS:
                 raise OmniClientError(

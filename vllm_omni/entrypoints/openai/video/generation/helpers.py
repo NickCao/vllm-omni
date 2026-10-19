@@ -40,6 +40,7 @@ from pydantic import TypeAdapter, ValidationError
 from vllm.entrypoints.launchers.launcher import terminate_if_errored
 from vllm.entrypoints.serve import create_error_response
 from vllm.logger import init_logger
+from vllm.multimodal.image import open_image
 from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 
 from vllm_omni.diffusion.models.interface import ReferenceVideoDecodeSpec
@@ -781,7 +782,7 @@ def _validate_minimax_h3_image_payload(
 ) -> None:
     """Validate a H3 image before converting it to a format-less PIL image."""
     try:
-        with Image.open(io.BytesIO(payload)) as image:
+        with open_image(io.BytesIO(payload)) as image:
             image_format = str(image.format or "").lower()
             if image_format in MINIMAX_H3_REFERENCE_IMAGE_FORMATS:
                 _validate_image_pixel_limit(image)
