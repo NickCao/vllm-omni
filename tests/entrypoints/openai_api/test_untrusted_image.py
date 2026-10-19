@@ -57,7 +57,7 @@ def test_minimax_h3_upload_validator_rejects_disallowed_eps(monkeypatch):
     assert isinstance(exc_info.value.__cause__, UnidentifiedImageError)
 
 
-def test_minimax_h3_upload_error_lists_only_decodable_reference_formats():
+def test_minimax_h3_upload_error_lists_supported_reference_formats():
     image_buffer = BytesIO()
     Image.new("RGB", (1, 1)).save(image_buffer, format="TIFF")
 
@@ -65,3 +65,15 @@ def test_minimax_h3_upload_error_lists_only_decodable_reference_formats():
         _validate_minimax_h3_image_payload(image_buffer.getvalue(), filename="reference.tiff")
 
     assert exc_info.value.detail == "MiniMax H3 reference images must use JPG, JPEG, PNG, or WEBP; got tiff."
+
+
+def test_minimax_h3_upload_decode_error_lists_supported_formats():
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_minimax_h3_image_payload(
+            b"not an image",
+            filename="reference.heic",
+        )
+
+    assert exc_info.value.detail == (
+        "Invalid uploaded image reference: reference.heic. Expected a JPG, JPEG, PNG, or WEBP image."
+    )
