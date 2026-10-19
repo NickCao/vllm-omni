@@ -798,7 +798,10 @@ def _validate_minimax_h3_image_payload(
     except (OSError, ValueError) as exc:
         if allow_non_image:
             return
-        raise HTTPException(400, detail=f"Invalid uploaded image reference: {filename}") from exc
+        raise HTTPException(
+            HTTPStatus.BAD_REQUEST.value,
+            detail=(f"Invalid uploaded image reference: {filename}. Expected a JPG, JPEG, PNG, or WEBP image."),
+        ) from exc
 
     if image_format not in MINIMAX_H3_REFERENCE_IMAGE_FORMATS:
         raise HTTPException(
