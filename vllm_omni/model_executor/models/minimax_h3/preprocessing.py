@@ -46,7 +46,7 @@ MINIMAX_H3_SUPPORTED_ASPECT_RATIOS = {
     "9:16": 9.0 / 16.0,
 }
 MINIMAX_H3_MAX_REFERENCE_IMAGE_BYTES = 30 * 1024 * 1024
-MINIMAX_H3_REFERENCE_IMAGE_FORMATS = frozenset({"jpeg", "png", "webp", "heic", "heif"})
+MINIMAX_H3_REFERENCE_IMAGE_FORMATS = frozenset({"jpeg", "png", "webp"})
 
 
 def _align_multiple(value: float, multiple: int = 32) -> int:
@@ -72,7 +72,7 @@ def load_minimax_h3_images(value: Any) -> list[Image.Image]:
             image_format = str(image.format or "").lower()
             if image_format and image_format not in MINIMAX_H3_REFERENCE_IMAGE_FORMATS:
                 raise OmniClientError(
-                    f"MiniMax H3 reference image must use JPG, JPEG, PNG, WEBP, HEIC, or HEIF, got {image.format}"
+                    f"MiniMax H3 reference image must use JPG, JPEG, PNG, or WEBP, got {image.format}"
                 )
             return [image.convert("RGB")]
     if isinstance(value, Image.Image):

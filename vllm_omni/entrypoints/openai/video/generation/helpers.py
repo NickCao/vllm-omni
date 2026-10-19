@@ -88,7 +88,7 @@ MINIMAX_H3_MAX_REFERENCE_AUDIO_BYTES = 15 * 1024 * 1024
 
 MINIMAX_H3_MAX_REFERENCE_COUNT = 12
 
-MINIMAX_H3_REFERENCE_IMAGE_FORMATS = frozenset({"jpeg", "png", "webp", "heic", "heif"})
+MINIMAX_H3_REFERENCE_IMAGE_FORMATS = frozenset({"jpeg", "png", "webp"})
 
 MINIMAX_H3_REFERENCE_VIDEO_SUFFIXES = frozenset({".mp4", ".mov"})
 
@@ -730,6 +730,8 @@ def _uploaded_media_kind(upload: UploadFile) -> str:
     if content_type.startswith("audio/"):
         return "audio"
     suffix = Path(upload.filename or "").suffix.lower()
+    # HEIC/HEIF are classified as images so they take the image validation path;
+    # the decoder allowlist below does not accept those formats.
     if suffix in {".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"}:
         return "image"
     if suffix in {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}:
@@ -801,10 +803,7 @@ def _validate_minimax_h3_image_payload(
     if image_format not in MINIMAX_H3_REFERENCE_IMAGE_FORMATS:
         raise HTTPException(
             status_code=HTTPStatus.BAD_REQUEST.value,
-            detail=(
-                "MiniMax H3 reference images must use JPG, JPEG, PNG, WEBP, HEIC, or HEIF; "
-                f"got {image_format or 'unknown'}."
-            ),
+            detail=(f"MiniMax H3 reference images must use JPG, JPEG, PNG, or WEBP; got {image_format or 'unknown'}."),
         )
 
 
