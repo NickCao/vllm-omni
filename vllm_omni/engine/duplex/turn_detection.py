@@ -311,7 +311,7 @@ def _process_segments(
     accumulated: TurnDetectionResult | None = None
     while offset < samples.size:
         end = min(samples.size, offset + detector.vad.samples_until_frame)
-        result = detector._process_frame(samples[offset:end])
+        result = detector._process_samples(samples[offset:end])
         offset = end
         if accumulated is not None:
             result = TurnDetectionResult(
@@ -411,7 +411,7 @@ class ServerTurnDetector:
     ) -> list[TurnDetectionSegment]:
         return _process_segments(self, base64_audio, fmt=fmt, sample_rate_hz=sample_rate_hz)
 
-    def _process_frame(self, samples: np.ndarray) -> TurnDetectionResult:
+    def _process_samples(self, samples: np.ndarray) -> TurnDetectionResult:
         result: StreamingVADResult = self._vad.process(samples)
         detected = TurnDetectionResult(
             is_speech=result.is_speech,
@@ -527,8 +527,33 @@ class SemanticTurnDetector:
     ) -> list[TurnDetectionSegment]:
         return _process_segments(self, base64_audio, fmt=fmt, sample_rate_hz=sample_rate_hz)
 
-    def _process_frame(self, samples: np.ndarray) -> TurnDetectionResult:
-        """Score through the next frame boundary.
+    def process(
+        self,
+        base64_audio: str,
+        *,
+        fmt: str,
+        sample_rate_hz: int | None,
+        audio_end_ms: int | None = None,
+    ) -> TurnDetectionResult:
+        """Aggregate one appended chunk for the turn-based Realtime caller."""
+        samples = self._vad.decode_base64(base64_audio, fmt=fmt, sample_rate_hz=sample_rate_hz)
+        return self._process_samples(samples)
+
+    def reconfigure(self, config: TurnDetectionConfig) -> None:
+        """Apply updated semantic settings while preserving the current turn."""
+        self.config = config
+        eagerness = config.eagerness if config.eagerness in SEMANTIC_VAD_MAX_SILENCE_MS else "auto"
+        self._candidate_silence_ms = SEMANTIC_VAD_CANDIDATE_SILENCE_MS[eagerness]
+        self._max_silence_ms = SEMANTIC_VAD_MAX_SILENCE_MS[eagerness]
+        self._vad.config = SileroVADConfig(
+            threshold=float(config.threshold),
+            prefix_padding_ms=int(config.prefix_padding_ms),
+            silence_duration_ms=self._candidate_silence_ms,
+            min_speech_duration_ms=max(32, int(config.min_speech_duration_ms)),
+        )
+
+    def _process_samples(self, samples: np.ndarray) -> TurnDetectionResult:
+        """Run the shared semantic state machine on decoded audio samples.
 
         Raises ``SemanticVADUnavailableError`` / ``ServerVADUnavailableError`` /
         ``ValueError`` like the server VAD. A Smart Turn *inference* failure does

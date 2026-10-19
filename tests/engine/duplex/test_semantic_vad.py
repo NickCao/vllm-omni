@@ -249,6 +249,27 @@ def test_a_complete_turn_commits_at_the_first_pause() -> None:
     assert committed.as_payload()["turn_complete_probability"] == pytest.approx(0.9)
 
 
+def test_process_aggregates_one_chunk_for_the_turn_based_realtime_caller() -> None:
+    turn = _ScriptedTurn(0.9)
+    detector = _detector(turn, eagerness="high")
+    speech = np.full(1024 * RATE // 1000, SPEECH, dtype=np.float32)
+    silence = np.zeros(1024 * RATE // 1000, dtype=np.float32)
+
+    result = detector.process(
+        _b64(np.concatenate((speech, silence))),
+        fmt="pcm_f32le",
+        sample_rate_hz=RATE,
+    )
+
+    assert result.speech_started
+    assert result.speech_stopped
+    assert result.should_commit
+    assert result.semantic_decision == "smart_turn_complete"
+    assert result.commit_reason == "semantic_complete"
+    assert result.turn_complete_probability == pytest.approx(0.9)
+    assert len(turn.windows) == 1
+
+
 def test_default_waits_through_a_short_clause_pause_before_scoring() -> None:
     # Even a confidently complete model answer must not split a 900 ms
     # hesitation: the default only calls it after the 1200 ms candidate pause.
