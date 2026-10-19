@@ -2260,7 +2260,7 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
                         yield f"data: {data}\n\n"
 
                 elif final_output_type == "audio":
-                    if any(tools_streamed):
+                    if any(tools_streamed[output.index] for output in res.outputs):
                         continue
 
                     # Observe audio_ttfp_s on first audio packet for this request_id
@@ -2805,7 +2805,7 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
                 # the fields of FunctionDefinition are a superset of the
                 # tool call outputs and can be used for parsing
                 assert content is not None
-                tool_calls = TypeAdapter(list[FunctionDefinition]).validate_json(content)
+                tool_calls: list[FunctionDefinition] = TypeAdapter(list[FunctionDefinition]).validate_json(content)
                 tool_call_ids = []
                 for tool_call in tool_calls:
                     tool_call_ids.append(
