@@ -292,6 +292,17 @@ class TurnDetectionSegment:
     result: TurnDetectionResult
 
 
+def _process_frames(detector: TurnDetector, samples: np.ndarray) -> list[tuple[int, TurnDetectionResult]]:
+    """Advance detector state one Silero frame boundary at a time."""
+    frames: list[tuple[int, TurnDetectionResult]] = []
+    offset = 0
+    while offset < samples.size:
+        end = min(samples.size, offset + detector.vad.samples_until_frame)
+        frames.append((end, detector._process_samples(samples[offset:end])))
+        offset = end
+    return frames
+
+
 def _process_segments(
     detector: TurnDetector,
     base64_audio: str,
@@ -307,12 +318,9 @@ def _process_segments(
     """
     samples = detector.vad.decode_base64(base64_audio, fmt=fmt, sample_rate_hz=sample_rate_hz)
     segments: list[TurnDetectionSegment] = []
-    start = offset = 0
+    start = 0
     accumulated: TurnDetectionResult | None = None
-    while offset < samples.size:
-        end = min(samples.size, offset + detector.vad.samples_until_frame)
-        result = detector._process_samples(samples[offset:end])
-        offset = end
+    for offset, result in _process_frames(detector, samples):
         if accumulated is not None:
             result = TurnDetectionResult(
                 is_speech=accumulated.is_speech or result.is_speech,
@@ -535,9 +543,39 @@ class SemanticTurnDetector:
         sample_rate_hz: int | None,
         audio_end_ms: int | None = None,
     ) -> TurnDetectionResult:
-        """Aggregate one appended chunk for the turn-based Realtime caller."""
+        """Aggregate one appended chunk for the turn-based Realtime caller.
+
+        Semantic state advances on Silero's frame grid so a large append cannot
+        hide an earlier onset or candidate pause. The aggregate then coalesces a
+        completed turn followed by new speech, matching the legacy Realtime API.
+        """
         samples = self._vad.decode_base64(base64_audio, fmt=fmt, sample_rate_hz=sample_rate_hz)
-        return self._process_samples(samples)
+        frames = _process_frames(self, samples)
+        if not frames:
+            return self._process_samples(samples)
+
+        results = [result for _, result in frames]
+        last = results[-1]
+        committed = [result for result in results if result.should_commit]
+        should_commit = bool(committed) and not last.speech_active
+        selected = committed[-1] if should_commit else last
+        first_started = next((result for result in results if result.speech_started), last)
+        return TurnDetectionResult(
+            is_speech=any(result.is_speech for result in results),
+            speech_active=last.speech_active,
+            speech_started=any(result.speech_started for result in results),
+            speech_stopped=bool(committed),
+            speech_probability=max(result.speech_probability for result in results),
+            audio_start_ms=first_started.audio_start_ms,
+            audio_end_ms=selected.audio_end_ms,
+            should_commit=should_commit,
+            create_response=last.create_response,
+            backend=last.backend,
+            turn_complete_probability=selected.turn_complete_probability,
+            turn_evaluations=sum(result.turn_evaluations for result in results),
+            semantic_decision=selected.semantic_decision,
+            commit_reason=selected.commit_reason,
+        )
 
     def reconfigure(self, config: TurnDetectionConfig) -> None:
         """Apply updated semantic settings while preserving the current turn."""
